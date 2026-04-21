@@ -2531,10 +2531,17 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 
   // --- Sending ---
 
-  function sendTracking(pageNum, isBeacon) {
-    // Prevent overlapping non-beacon sends
+  var pendingPageSend = null; // queued page-change send if blocked by in-flight
+
+  function sendTracking(pageNum, isBeacon, isPageChange) {
+    // Field-change sends yield to in-flight requests; page-change sends queue instead of dropping
     if (!isBeacon && sendInFlight) {
-      log('Send skipped (in-flight)');
+      if (isPageChange) {
+        pendingPageSend = pageNum;
+        log('Page send queued (in-flight), will retry');
+      } else {
+        log('Send skipped (in-flight)');
+      }
       return;
     }
 
@@ -2575,6 +2582,12 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
           log('API request failed', err);
         }).finally(function() {
           sendInFlight = false;
+          // Flush any queued page-change send that was blocked
+          if (pendingPageSend !== null) {
+            var queuedPage = pendingPageSend;
+            pendingPageSend = null;
+            sendTracking(queuedPage, false, true);
+          }
         });
       }
 
@@ -2612,8 +2625,8 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         if (newPage !== currentPage) {
           log('Page changed: ' + currentPage + ' → ' + newPage);
           currentPage = newPage;
-          // Send once after page settles (captures all field data up to this point)
-          sendTracking(newPage, false);
+          // Send once after page settles — isPageChange=true so it queues instead of dropping
+          sendTracking(newPage, false, true);
         }
       } catch (e) {
         log('Error in page change handler', e);
