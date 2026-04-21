@@ -4,8 +4,9 @@
 </head><body>
 <script>
 (function() {
-  // Medically Modern — Form Drop-off Tracker
+  // Medically Modern — Form Drop-off Tracker V2
   // Fires a single beacon when this widget's page becomes visible.
+  // Now captures field values passed via URL params by JotForm token interpolation.
   // JotForm preloads ALL widget iframes at once, but hidden-page iframes
   // have 0x0 dimensions. We poll for non-zero size to detect page activation.
 
@@ -13,41 +14,55 @@
   var fired = false;
 
   var params = new URLSearchParams(window.location.search);
-  var page = params.get('page') || '0';
+  var page   = params.get('page') || '0';
   var formId = params.get('form') || '';
+
+  // Field values interpolated by JotForm from the form state at render time.
+  // Pages 2+ will have these filled in because page 1 fields are required.
+  var fn  = params.get('fn')  || '';  // firstName
+  var ln  = params.get('ln')  || '';  // lastName
+  var em  = params.get('em')  || '';  // email
+  var ph  = params.get('ph')  || '';  // phone
+  var dob = params.get('dob') || '';  // dateOfBirth
+  var prd = params.get('prd') || '';  // productSelection
 
   function fireBeacon() {
     if (fired) return;
     fired = true;
+    var payload = {
+      page: parseInt(page, 10),
+      form: formId,
+      ts: Date.now()
+    };
+    // Only include fields that have actual values (not empty JotForm tokens)
+    if (fn && fn !== '{firstName}')            payload.fn  = fn;
+    if (ln && ln !== '{lastName}')             payload.ln  = ln;
+    if (em && em !== '{emailAddress}')         payload.em  = em;
+    if (ph && ph !== '{phoneNumber:full}')     payload.ph  = ph;
+    if (dob && dob !== '{dateOfBirth}')        payload.dob = dob;
+    if (prd && prd !== '{productSelection}')   payload.prd = prd;
+
     fetch(API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        page: parseInt(page, 10),
-        form: formId,
-        ts: Date.now()
-      })
+      body: JSON.stringify(payload)
     }).catch(function() {});
   }
 
   function isVisible() {
-    // JotForm sets hidden-page iframes to 0x0. Check our own viewport.
     return document.documentElement.clientWidth > 0 &&
            document.documentElement.clientHeight > 0;
   }
 
-  // Immediate check — if already visible (page 1 on load), fire now.
   if (isVisible()) {
     fireBeacon();
   } else {
-    // Poll every 500ms for visibility (page navigation).
     var poll = setInterval(function() {
       if (isVisible()) {
         clearInterval(poll);
         fireBeacon();
       }
     }, 500);
-    // Stop polling after 10 minutes (user abandoned form).
     setTimeout(function() { clearInterval(poll); }, 600000);
   }
 })();
