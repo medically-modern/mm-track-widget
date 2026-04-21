@@ -2854,6 +2854,20 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   var form = document.querySelector('form.jotform-form');
   if (!form) return;
 
+  // ── Neutralize JotForm's native submit infrastructure ──
+  // 1. Remove action so native submit can't POST to JotForm
+  form.removeAttribute('action');
+  form.removeAttribute('onsubmit');
+  // 2. Override the form's submit() method so JotForm's programmatic
+  //    form.submit() call triggers our handler instead of native submit.
+  //    (JS-invoked form.submit() does NOT fire the 'submit' event.)
+  var nativeSubmit = form.submit.bind(form);
+  var submitInProgress = false;
+  form.submit = function() {
+    // Trigger our handler instead of native submit
+    handleSubmit();
+  };
+
   var SUBMIT_URL = 'https://mm-doctor-api-production.up.railway.app/api/intake/submit';
   var TRACK_URL  = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
 
@@ -2936,10 +2950,9 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     return missing;
   }
 
-  // Prevent JotForm's default submit — we handle it ourselves
-  form.addEventListener('submit', function(e) {
-    e.preventDefault();
-    e.stopPropagation();
+  // ── Core submit handler (called from both event listener AND form.submit() override) ──
+  function handleSubmit() {
+    if (submitInProgress) return; // prevent double-submit
 
     // Kill tracking immediately
     formSubmitted = true;
@@ -2956,6 +2969,8 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
       formSubmitted = false; // let tracking resume if they go back
       return;
     }
+
+    submitInProgress = true;
 
     // Disable the submit button to prevent double-clicks
     var submitBtn = form.querySelector('.form-submit-button');
@@ -2997,8 +3012,16 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         submitBtn.disabled = false;
         submitBtn.textContent = 'Submit';
       }
+      submitInProgress = false;
       formSubmitted = false;
     });
+  }
+
+  // Event listener for normal submit events (button click with type="submit")
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    handleSubmit();
   });
 })();
 </script>
