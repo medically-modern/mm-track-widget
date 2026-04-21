@@ -2407,10 +2407,14 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   // State
   let lastSendTime = 0;
   let currentPage = 1;
-  let debounceTimer = null;
-  let pageSettleTimer = null;
   let sendInFlight = false;
-  let formSubmitted = false; // kills all tracking after submit
+  // These variables are shared with the submit-handler IIFE via window.__mm
+  window.__mm = window.__mm || {};
+  window.__mm.formSubmitted = false;
+  window.__mm.debounceTimer = null;
+  window.__mm.pageSettleTimer = null;
+  window.__mm.pendingPageSend = null;
+  window.__mm.SESSION_ID = SESSION_ID;
   let formElement = null;
   let pageObserver = null;
 
@@ -2554,16 +2558,14 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 
   // --- Sending ---
 
-  var pendingPageSend = null; // queued page-change send if blocked by in-flight
-
   function sendTracking(pageNum, isBeacon, isPageChange) {
     // Once form is submitted, stop all tracking — prevents ghost partial leads
-    if (formSubmitted) return;
+    if (window.__mm.formSubmitted) return;
 
     // Field-change sends yield to in-flight requests; page-change sends queue instead of dropping
     if (!isBeacon && sendInFlight) {
       if (isPageChange) {
-        pendingPageSend = pageNum;
+        window.__mm.pendingPageSend = pageNum;
         log('Page send queued (in-flight), will retry');
       } else {
         log('Send skipped (in-flight)');
@@ -2610,9 +2612,9 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         }).finally(function() {
           sendInFlight = false;
           // Flush any queued page-change send that was blocked
-          if (pendingPageSend !== null) {
-            var queuedPage = pendingPageSend;
-            pendingPageSend = null;
+          if (window.__mm.pendingPageSend !== null) {
+            var queuedPage = window.__mm.pendingPageSend;
+            window.__mm.pendingPageSend = null;
             sendTracking(queuedPage, false, true);
           }
         });
@@ -2630,14 +2632,14 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   // Single debounced handler for ALL field changes.
   // Coalesces rapid events (change + blur, multiple keystrokes) into one send.
   function scheduleSend() {
-    clearTimeout(debounceTimer);
+    clearTimeout(window.__mm.debounceTimer);
     var now = Date.now();
     var timeSinceLastSend = now - lastSendTime;
 
     if (timeSinceLastSend >= DEBOUNCE_MS) {
       sendTracking(currentPage, false);
     } else {
-      debounceTimer = setTimeout(function() {
+      window.__mm.debounceTimer = setTimeout(function() {
         sendTracking(currentPage, false);
       }, DEBOUNCE_MS - timeSinceLastSend);
     }
@@ -2645,8 +2647,8 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 
   // Debounced page change — waits for DOM to settle before detecting page
   function onMutationBatch() {
-    clearTimeout(pageSettleTimer);
-    pageSettleTimer = setTimeout(function() {
+    clearTimeout(window.__mm.pageSettleTimer);
+    window.__mm.pageSettleTimer = setTimeout(function() {
       try {
         var newPage = detectCurrentPage();
         if (newPage !== currentPage) {
@@ -2931,7 +2933,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     try {
       var payload = JSON.stringify({
         page: 0, submitted: true, form: '261015780644152', ts: Date.now(),
-        sid: SESSION_ID,
+        sid: window.__mm.SESSION_ID,
         fn: fields.firstName || '', ln: fields.lastName || '',
         em: fields.email || '', ph: fields.phone || ''
       });
@@ -2961,11 +2963,11 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   function handleSubmit() {
     if (submitInProgress) return; // prevent double-submit
 
-    // Kill tracking immediately
-    formSubmitted = true;
-    clearTimeout(debounceTimer);
-    clearTimeout(pageSettleTimer);
-    pendingPageSend = null;
+    // Kill tracking immediately (shared state with tracking IIFE)
+    window.__mm.formSubmitted = true;
+    clearTimeout(window.__mm.debounceTimer);
+    clearTimeout(window.__mm.pageSettleTimer);
+    window.__mm.pendingPageSend = null;
 
     var fields = collectFields();
 
@@ -2973,7 +2975,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     var missing = validate(fields);
     if (missing.length) {
       alert('Please fill in: ' + missing.join(', '));
-      formSubmitted = false; // let tracking resume if they go back
+      window.__mm.formSubmitted = false; // let tracking resume if they go back
       return;
     }
 
@@ -2986,7 +2988,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     }
 
     // Attach session ID so server can match this submission to its partial lead
-    fields.sid = SESSION_ID;
+    fields.sid = window.__mm.SESSION_ID;
 
     // Send the submitted signal (marks fingerprint, queues partial deletion)
     sendSubmittedSignal(fields);
@@ -3019,7 +3021,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         submitBtn.textContent = 'Submit';
       }
       submitInProgress = false;
-      formSubmitted = false;
+      window.__mm.formSubmitted = false;
     });
   }
 
