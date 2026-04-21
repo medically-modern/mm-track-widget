@@ -2855,18 +2855,25 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   if (!form) return;
 
   // ── Neutralize JotForm's native submit infrastructure ──
-  // 1. Remove action so native submit can't POST to JotForm
+  // 1. Remove action so native submit can't POST anywhere
   form.removeAttribute('action');
   form.removeAttribute('onsubmit');
-  // 2. Override the form's submit() method so JotForm's programmatic
-  //    form.submit() call triggers our handler instead of native submit.
-  //    (JS-invoked form.submit() does NOT fire the 'submit' event.)
-  var nativeSubmit = form.submit.bind(form);
+  // 2. Change submit button from type="submit" to type="button" so
+  //    JotForm can't trigger native form submission at all.
+  //    JotForm.forms.js caches form.submit() before our script runs,
+  //    so overriding form.submit doesn't work — we must kill the button.
+  var submitBtn = form.querySelector('button.form-submit-button, input.form-submit-button');
   var submitInProgress = false;
-  form.submit = function() {
-    // Trigger our handler instead of native submit
-    handleSubmit();
-  };
+  if (submitBtn) {
+    submitBtn.setAttribute('type', 'button');
+    submitBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      handleSubmit();
+    });
+  }
+  // 3. Override form.submit() as fallback — catches any programmatic submit calls
+  form.submit = function() { handleSubmit(); };
 
   var SUBMIT_URL = 'https://mm-doctor-api-production.up.railway.app/api/intake/submit';
   var TRACK_URL  = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
@@ -2973,7 +2980,6 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     submitInProgress = true;
 
     // Disable the submit button to prevent double-clicks
-    var submitBtn = form.querySelector('.form-submit-button');
     if (submitBtn) {
       submitBtn.disabled = true;
       submitBtn.textContent = 'Submitting...';
