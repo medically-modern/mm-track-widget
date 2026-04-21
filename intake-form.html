@@ -2374,7 +2374,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   </script>
 </form>
 <div id="sr-status-message" class="sr-only" role="status" aria-live="polite" style="font-size: 0;"></div>
-<!-- MM Real-time Field Tracking -->
+<!-- MM Real-time Tracking Script (all fields) -->
 <script>
 (function() {
   'use strict';
@@ -2382,24 +2382,22 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   const DEBUG = true;
   const API_ENDPOINT = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
   const DEBOUNCE_MS = 3000;
-  const FORM_ID = '261015780644152'; // Default, will try to detect from DOM
+  const FORM_ID = '261015780644152'; // Live form ID
 
   // State management
   let lastSendTime = 0;
   let currentPage = 1;
-  let lastSentPage = 0;
-  let pendingData = null;
   let debounceTimer = null;
   let formElement = null;
   let pageObserver = null;
 
   // Utility: safe logging
-  function log(msg, data = null) {
+  function log(msg, data) {
     if (DEBUG) {
-      if (data) {
-        console.log(`[mm-track] ${msg}`, data);
+      if (data !== undefined) {
+        console.log('[mm-track] ' + msg, data);
       } else {
-        console.log(`[mm-track] ${msg}`);
+        console.log('[mm-track] ' + msg);
       }
     }
   }
@@ -2407,97 +2405,145 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   // Utility: get form ID from DOM
   function detectFormId() {
     try {
-      // Try to get from data attributes or form action
-      const form = document.querySelector('form.jotform-form');
+      var form = document.querySelector('form.jotform-form');
       if (form) {
-        // Check for data-form-id attribute
-        const dataFormId = form.getAttribute('data-form-id');
+        var dataFormId = form.getAttribute('data-form-id');
         if (dataFormId) return dataFormId;
-
-        // Check form id attribute
-        const formId = form.id;
-        if (formId && formId.startsWith('form_')) {
-          return formId.replace('form_', '');
-        }
+        var fid = form.id;
+        if (fid && fid.startsWith('form_')) return fid.replace('form_', '');
       }
-
-      // Fallback: try to extract from form action URL
       if (form && form.action) {
-        const match = form.action.match(/formID=(\d+)/);
+        var match = form.action.match(/formID=(\d+)/);
         if (match) return match[1];
       }
-    } catch (e) {
-      log('Error detecting form ID', e);
-    }
+    } catch (e) { log('Error detecting form ID', e); }
     return FORM_ID;
   }
 
   // Utility: detect current page number
   function detectCurrentPage() {
     try {
-      // Look for visible page section with data-type="control_pagebreak"
-      const pageSections = document.querySelectorAll('ul.form-section.page-section');
-
-      if (pageSections.length === 0) {
-        log('No page sections found');
-        return 1;
-      }
-
-      for (let i = 0; i < pageSections.length; i++) {
-        const section = pageSections[i];
-        const isVisible = window.getComputedStyle(section).display !== 'none' &&
-                         section.offsetParent !== null;
-
-        if (isVisible) {
-          return i + 1; // Pages are 1-indexed
+      var pageSections = document.querySelectorAll('ul.form-section.page-section');
+      if (pageSections.length === 0) return 1;
+      for (var i = 0; i < pageSections.length; i++) {
+        var section = pageSections[i];
+        var style = window.getComputedStyle(section);
+        if (style.display !== 'none' && section.offsetParent !== null) {
+          return i + 1;
         }
       }
-    } catch (e) {
-      log('Error detecting current page', e);
-    }
+    } catch (e) { log('Error detecting page', e); }
     return currentPage;
   }
 
-  // Extract field values from DOM
+  // Get value of a checked radio button by name pattern
+  function getRadioValue(namePattern) {
+    try {
+      var checked = document.querySelector('input[name*="' + namePattern + '"]:checked');
+      if (checked) {
+        // Get the label text for this radio (more readable than the raw value)
+        var li = checked.closest('li');
+        if (li) {
+          var label = li.querySelector('label');
+          if (label) return label.textContent.trim();
+        }
+        return checked.value || '';
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  // Get value of a text/email input by name pattern
+  function getInputValue(namePattern) {
+    try {
+      var input = document.querySelector('input[name*="' + namePattern + '"]');
+      if (input) return input.value || '';
+    } catch (e) {}
+    return '';
+  }
+
+  // Extract ALL field values from DOM
   function extractFieldData() {
-    const data = {
-      fn: '', // first name
-      ln: '', // last name
-      em: '', // email
-      ph: '', // phone
-      dob: '', // date of birth
-      prd: '' // product
+    var data = {
+      // Contact info
+      fn: '',    // first name
+      ln: '',    // last name
+      em: '',    // email
+      ph: '',    // phone
+      dob: '',   // date of birth
+
+      // Product selections (radios)
+      prd: '',   // product selection (Q136)
+      cgmScn: '',// CGM scenario (Q137)
+      mon: '',   // current monitor (Q138)
+      pump: '',  // pump type (Q76)
+      pmpScn: '',// pump scenario (Q139)
+
+      // Insurance
+      ins: '',   // insurance provider (Q46)
+      plan: '',  // plan type (Q47)
+      mid: ''    // member ID (Q112)
     };
 
     try {
-      // First Name
-      const fnInput = document.querySelector('input[name*="firstName"]');
+      // === Contact Info ===
+      // First Name - Q32
+      var fnInput = document.querySelector('input[id="first_32"]');
+      if (!fnInput) fnInput = document.querySelector('input[name*="firstName"]');
       if (fnInput) data.fn = fnInput.value || '';
 
-      // Last Name
-      const lnInput = document.querySelector('input[name*="lastName"]');
+      // Last Name - Q33
+      var lnInput = document.querySelector('input[id="last_33"]');
+      if (!lnInput) lnInput = document.querySelector('input[name*="lastName"]');
       if (lnInput) data.ln = lnInput.value || '';
 
-      // Email
-      const emailInput = document.querySelector('input[name*="email"]');
+      // Email - Q36
+      var emailInput = document.querySelector('input[name*="emailAddress"]');
+      if (!emailInput) emailInput = document.querySelector('input[name*="email"]');
       if (emailInput) data.em = emailInput.value || '';
 
-      // Phone - handle complex phone field names
-      const phoneInput = document.querySelector('input[name*="phone"]');
+      // Phone - Q89 (full number)
+      var phoneInput = document.querySelector('input[name="q89_phoneNumber[full]"]');
+      if (!phoneInput) phoneInput = document.querySelector('input[name*="phoneNumber"][name*="full"]');
+      if (!phoneInput) phoneInput = document.querySelector('input[name*="phone"]');
       if (phoneInput) data.ph = phoneInput.value || '';
 
-      // Date of Birth - concatenate month/day/year if separate
-      const dobInputs = document.querySelectorAll('input[name*="dateOf"]');
-      if (dobInputs.length > 0) {
-        const dobParts = Array.from(dobInputs)
-          .map(inp => inp.value || '')
-          .filter(v => v);
-        data.dob = dobParts.join('-') || '';
+      // Date of Birth - Q93 (month/day/year sub-fields)
+      var dobMonth = document.querySelector('input[id*="month_93"], select[id*="month_93"]');
+      var dobDay   = document.querySelector('input[id*="day_93"], select[id*="day_93"]');
+      var dobYear  = document.querySelector('input[id*="year_93"], select[id*="year_93"]');
+      if (dobMonth && dobDay && dobYear) {
+        var m = dobMonth.value || '';
+        var d = dobDay.value || '';
+        var y = dobYear.value || '';
+        if (m || d || y) data.dob = m + '/' + d + '/' + y;
       }
 
-      // Product (radio button selection)
-      const productRadio = document.querySelector('input[name*="whatWould"]:checked');
-      if (productRadio) data.prd = productRadio.value || '';
+      // === Product Selections (radios) ===
+      // Q136 - Product Selection
+      data.prd = getRadioValue('productSelection');
+
+      // Q137 - CGM Scenario (CGM-only branch)
+      data.cgmScn = getRadioValue('cgmScenario');
+
+      // Q138 - Current Monitor (CGM-only branch)
+      data.mon = getRadioValue('currentMonitor');
+
+      // Q76 - Pump Type
+      data.pump = getRadioValue('pumpType');
+
+      // Q139 - Pump Scenario
+      data.pmpScn = getRadioValue('pumpScenario');
+
+      // === Insurance ===
+      // Q46 - Insurance Provider
+      data.ins = getRadioValue('insProv');
+
+      // Q47 - Plan Type
+      data.plan = getRadioValue('planType');
+
+      // Q112 - Member ID
+      data.mid = getInputValue('memberId');
 
     } catch (e) {
       log('Error extracting field data', e);
@@ -2506,14 +2552,19 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     return data;
   }
 
-  // Send tracking data to API
-  function sendTracking(pageNum, isBeacon = false) {
-    try {
-      const timestamp = Date.now();
-      const formId = detectFormId();
-      const fieldData = extractFieldData();
+  // Check if we have any meaningful field data (not just empty strings)
+  function hasFieldData(data) {
+    return data.fn || data.ln || data.em || data.ph || data.prd || data.ins || data.mid;
+  }
 
-      const payload = {
+  // Send tracking data to API
+  function sendTracking(pageNum, isBeacon) {
+    try {
+      var timestamp = Date.now();
+      var formId = detectFormId();
+      var fieldData = extractFieldData();
+
+      var payload = {
         page: pageNum,
         form: formId,
         ts: timestamp,
@@ -2522,25 +2573,30 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         em: fieldData.em,
         ph: fieldData.ph,
         dob: fieldData.dob,
-        prd: fieldData.prd
+        prd: fieldData.prd,
+        cgmScn: fieldData.cgmScn,
+        mon: fieldData.mon,
+        pump: fieldData.pump,
+        pmpScn: fieldData.pmpScn,
+        ins: fieldData.ins,
+        plan: fieldData.plan,
+        mid: fieldData.mid
       };
 
-      log(`Sending tracking data (page ${pageNum}, beacon: ${isBeacon})`, payload);
+      log('Sending tracking (page ' + pageNum + ', beacon: ' + !!isBeacon + ')', payload);
 
       if (isBeacon) {
-        // Use sendBeacon for unload/reliability
-        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
         navigator.sendBeacon(API_ENDPOINT, blob);
       } else {
-        // Use fetch for normal tracking
         fetch(API_ENDPOINT, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
           keepalive: true
-        }).catch(err => {
+        }).then(function(r) { return r.json(); }).then(function(d) {
+          log('API response', d);
+        }).catch(function(err) {
           log('API request failed', err);
         });
       }
@@ -2555,16 +2611,13 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   function onFieldChange() {
     try {
       clearTimeout(debounceTimer);
-
-      const now = Date.now();
-      const timeSinceLastSend = now - lastSendTime;
+      var now = Date.now();
+      var timeSinceLastSend = now - lastSendTime;
 
       if (timeSinceLastSend >= DEBOUNCE_MS) {
-        // Send immediately
         sendTracking(currentPage, false);
       } else {
-        // Debounce
-        debounceTimer = setTimeout(() => {
+        debounceTimer = setTimeout(function() {
           sendTracking(currentPage, false);
         }, DEBOUNCE_MS - timeSinceLastSend);
       }
@@ -2576,14 +2629,11 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   // Page change handler
   function onPageChange() {
     try {
-      const newPage = detectCurrentPage();
-
+      var newPage = detectCurrentPage();
       if (newPage !== currentPage) {
-        log(`Page changed: ${currentPage} → ${newPage}`);
+        log('Page changed: ' + currentPage + ' → ' + newPage);
         currentPage = newPage;
-        lastSentPage = newPage;
-
-        // Send beacon on page change
+        // Send immediately on page change — captures all field data up to this point
         sendTracking(newPage, false);
       }
     } catch (e) {
@@ -2591,18 +2641,17 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     }
   }
 
-  // Setup field listeners
+  // Setup field listeners on ALL inputs
   function setupFieldListeners() {
     try {
-      // Get all form inputs
-      const inputs = document.querySelectorAll('form.jotform-form input, form.jotform-form select, form.jotform-form textarea');
-
-      inputs.forEach(input => {
+      var inputs = document.querySelectorAll(
+        'form.jotform-form input, form.jotform-form select, form.jotform-form textarea'
+      );
+      inputs.forEach(function(input) {
         input.addEventListener('change', onFieldChange);
         input.addEventListener('blur', onFieldChange);
       });
-
-      log(`Setup listeners on ${inputs.length} input elements`);
+      log('Setup listeners on ' + inputs.length + ' input elements');
     } catch (e) {
       log('Error setting up field listeners', e);
     }
@@ -2611,22 +2660,25 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   // Setup page change detection via MutationObserver
   function setupPageObserver() {
     try {
-      const pageSectionContainer = document.querySelector('ul.form-section');
-
-      if (!pageSectionContainer) {
-        log('Page section container not found, skipping page observer');
-        return;
+      var container = document.querySelector('ul.form-section');
+      if (!container) {
+        // Try parent container
+        container = document.querySelector('.form-all');
+        if (!container) {
+          log('Page section container not found');
+          return;
+        }
       }
 
-      pageObserver = new MutationObserver(() => {
+      pageObserver = new MutationObserver(function() {
         onPageChange();
       });
 
-      pageObserver.observe(pageSectionContainer, {
+      pageObserver.observe(container, {
         attributes: true,
         subtree: true,
         attributeFilter: ['style', 'class'],
-        attributeOldValue: false
+        childList: true
       });
 
       log('Page observer setup complete');
@@ -2638,12 +2690,11 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   // Setup unload beacon
   function setupUnloadBeacon() {
     try {
-      window.addEventListener('beforeunload', () => {
-        const finalPage = detectCurrentPage();
-        log(`Unload beacon (page ${finalPage})`);
+      window.addEventListener('beforeunload', function() {
+        var finalPage = detectCurrentPage();
+        log('Unload beacon (page ' + finalPage + ')');
         sendTracking(finalPage, true);
       });
-
       log('Unload beacon setup complete');
     } catch (e) {
       log('Error setting up unload beacon', e);
@@ -2661,15 +2712,21 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         return;
       }
 
-      const formId = detectFormId();
-      log(`Detected form ID: ${formId}`);
+      var formId = detectFormId();
+      log('Detected form ID: ' + formId);
 
       currentPage = detectCurrentPage();
-      log(`Detected current page: ${currentPage}`);
+      log('Detected current page: ' + currentPage);
 
       setupFieldListeners();
       setupPageObserver();
       setupUnloadBeacon();
+
+      // Send initial beacon after 2 seconds (captures page 1 visit)
+      setTimeout(function() {
+        log('Initial page 1 beacon');
+        sendTracking(currentPage, false);
+      }, 2000);
 
       log('Tracking initialized successfully');
     } catch (e) {
@@ -2681,13 +2738,11 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
-    // DOM already loaded
     init();
   }
 
 })();
 
 </script>
-
 </body>
 </html><script type="text/javascript">JotForm.isNewSACL=true;</script>
