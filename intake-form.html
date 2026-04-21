@@ -2707,5 +2707,104 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 })();
 
 </script>
+
+<!-- Hidden iframe for JotForm submission (form submits here, user stays on our page) -->
+<iframe id="jf-submit-frame" name="jf-submit-frame" style="display:none" aria-hidden="true"></iframe>
+
+<!-- Thank-you page (shown after submit, hidden initially) -->
+<div id="mm-thankyou" style="display:none; max-width:620px; margin:60px auto; padding:0 20px; font-family:'Poppins',Helvetica,sans-serif; text-align:center;">
+  <div style="margin-bottom:30px;">
+    <img src="https://www.jotform.com/uploads/Medically_Modern/form_files/261015780644152/uniqlogo_1776025647.png" alt="Medically Modern" style="max-width:190px; height:auto;" />
+  </div>
+  <h1 style="color:#4a7c79; font-size:28px; font-weight:600; margin-bottom:16px;">
+    You're all set &mdash; here's what happens next
+  </h1>
+  <div style="background:#f0f7f6; border-radius:12px; padding:24px 28px; margin:24px 0; text-align:left;">
+    <div style="padding:12px 0; border-bottom:1px solid #d4e6e4; font-size:16px; color:#333;">
+      <span style="color:#4a7c79; margin-right:8px;">&#10003;</span>
+      Check your text / email &mdash; we sent you your script
+    </div>
+    <div style="padding:12px 0; border-bottom:1px solid #d4e6e4; font-size:16px; color:#333;">
+      <span style="color:#4a7c79; margin-right:8px;">&#10003;</span>
+      Upload to your provider's portal or drop it off (fastest)
+    </div>
+    <div style="padding:12px 0; border-bottom:1px solid #d4e6e4; font-size:16px; color:#333;">
+      <span style="color:#4a7c79; margin-right:8px;">&#10003;</span>
+      We'll fax it too
+    </div>
+    <div style="padding:12px 0; font-size:16px; color:#333;">
+      <span style="color:#4a7c79; margin-right:8px;">&#10003;</span>
+      Once we receive it back &rarr; 1&ndash;2 days to ship
+    </div>
+  </div>
+  <div style="background:#f0f7f6; border-radius:12px; padding:20px; margin:24px 0;">
+    <div style="font-size:13px; color:#666; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Save Our Number</div>
+    <a href="tel:+13475037148" style="font-size:28px; font-weight:600; color:#4a7c79; text-decoration:none;">(347) 503-7148</a>
+  </div>
+  <p style="font-size:14px; color:#888; margin-top:16px;">Questions? Just reply to the text we sent.</p>
+</div>
+
+<!-- Submit interceptor: keeps user on our page, submits to JotForm via hidden iframe -->
+<script>
+(function() {
+  'use strict';
+
+  var form = document.querySelector('form.jotform-form');
+  if (!form) return;
+
+  var API_ENDPOINT = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
+
+  // Send the "submitted" signal to the tracking API so backend deletes partial lead
+  function sendSubmittedSignal() {
+    try {
+      var payload = JSON.stringify({ page: 0, submitted: true, form: '261015780644152', ts: Date.now() });
+      // Use sendBeacon for reliability (fires even during navigation)
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(API_ENDPOINT, new Blob([payload], { type: 'application/json' }));
+      } else {
+        fetch(API_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          keepalive: true
+        }).catch(function() {});
+      }
+      console.log('[mm-track] Sent submitted signal');
+    } catch (e) {
+      console.warn('[mm-track] Failed to send submitted signal', e);
+    }
+  }
+
+  // Intercept the form submit
+  form.setAttribute('target', 'jf-submit-frame');
+
+  // Listen for the hidden iframe to load (means JotForm processed the submission)
+  var iframe = document.getElementById('jf-submit-frame');
+  var submitPending = false;
+
+  form.addEventListener('submit', function() {
+    submitPending = true;
+    console.log('[mm-track] Form submit intercepted — posting to hidden iframe');
+  });
+
+  iframe.addEventListener('load', function() {
+    if (!submitPending) return; // Ignore initial empty load
+    console.log('[mm-track] JotForm submission complete — showing thank-you page');
+
+    // Send the submitted signal to delete partial lead
+    sendSubmittedSignal();
+
+    // Hide the form, show thank-you
+    form.style.display = 'none';
+    var srStatus = document.getElementById('sr-status-message');
+    if (srStatus) srStatus.style.display = 'none';
+    var thankyou = document.getElementById('mm-thankyou');
+    if (thankyou) thankyou.style.display = 'block';
+
+    // Scroll to top
+    window.scrollTo(0, 0);
+  });
+})();
+</script>
 </body>
 </html><script type="text/javascript">JotForm.isNewSACL=true;</script>
