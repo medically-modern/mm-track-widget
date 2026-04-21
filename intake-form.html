@@ -515,7 +515,8 @@ li[data-type=control_fileupload] .qq-upload-button {
   border-color: #cfd8dc;
  }
  .form-buttons-wrapper{
-  margin-bottom: 0;
+  margin-bottom: 24px;
+  padding-bottom: 8px;
  }
  .form-checkbox-item label,
  .form-radio-item label{
@@ -1407,8 +1408,8 @@ li.form-line[data-type="control_button"] {
   display: flex !important;
   justify-content: flex-end !important;
   align-items: center !important;
-  margin: 0 !important;
-  padding: 0 !important;
+  margin: 0 0 48px 0 !important;
+  padding: 0 0 16px 0 !important;
   min-height: 44px !important;
   position: relative !important;
   z-index: 2 !important;
@@ -1902,6 +1903,19 @@ input[type="checkbox"]:checked + label::before {
 #id_47 .form-sub-label-container {
   margin-top: 0 !important;
   margin-bottom: 4px !important;
+}
+/* === F. BUTTON BOTTOM BREATHING ROOM ===
+   Mobile browser toolbars (Safari, Chrome) sit over the viewport bottom.
+   The slide-up animation (translateY 16→0) also needs room below the buttons
+   or the container clips them during the transition. Push the page section
+   bottom edge well past the buttons so there's always visible space. */
+.form-section.page-section {
+  padding-bottom: 64px !important;
+}
+/* The pagebreak row (Back + Next on intermediate pages) is the last visible
+   element in the section — give it bottom margin too. */
+li.form-input-wide:has(.form-pagebreak) {
+  margin-bottom: 48px !important;
 }
 /* === END MM MOBILE FIX PACK V2 === */
 
@@ -2520,6 +2534,9 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
             data.docAddr   = doc.address || '';
             data.docAction = doc.action || '';
           }
+        } else if (currentPage > 4) {
+          // Patient moved past the doctor page without interacting with the widget
+          data.docAction = 'no_stash';
         }
       } catch (docErr) {
         log('Could not parse doctor widget value', docErr);
@@ -2631,6 +2648,22 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
           currentPage = newPage;
           // Send once after page settles — isPageChange=true so it queues instead of dropping
           sendTracking(newPage, false, true);
+
+          // Scroll the bottom of the visible page into view so the Next/Submit
+          // button is always reachable. Delay slightly so slide-in animations
+          // can set final layout before we measure.
+          setTimeout(function() {
+            try {
+              // Find the visible buttons wrapper (Next/Back or Submit)
+              var btns = document.querySelectorAll('.form-buttons-wrapper');
+              for (var i = 0; i < btns.length; i++) {
+                if (btns[i].offsetParent !== null) { // visible
+                  btns[i].scrollIntoView({ behavior: 'smooth', block: 'end' });
+                  break;
+                }
+              }
+            } catch (scrollErr) { /* best effort */ }
+          }, 400);
         }
       } catch (e) {
         log('Error in page change handler', e);
@@ -2774,8 +2807,6 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 })();
 </script>
 
-<iframe id="jf-submit-frame" name="jf-submit-frame" style="display:none" aria-hidden="true"></iframe>
-
 <!-- Thank-you page (shown after submit, hidden initially) -->
 <div id="mm-thankyou" style="display:none; max-width:620px; margin:60px auto; padding:0 20px; font-family:'Poppins',Helvetica,sans-serif; text-align:center;">
   <div style="margin-bottom:30px;">
@@ -2809,7 +2840,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   <p style="font-size:14px; color:#888; margin-top:16px;">Questions? Just reply to the text we sent.</p>
 </div>
 
-<!-- Submit interceptor: keeps user on our page, submits to JotForm via hidden iframe -->
+<!-- Direct submit: POSTs JSON to Railway, bypasses JotForm entirely -->
 <script>
 (function() {
   'use strict';
@@ -2817,61 +2848,147 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   var form = document.querySelector('form.jotform-form');
   if (!form) return;
 
-  var API_ENDPOINT = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
+  var SUBMIT_URL = 'https://mm-doctor-api-production.up.railway.app/api/intake/submit';
+  var TRACK_URL  = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
 
-  // Send the "submitted" signal to the tracking API so backend deletes partial lead.
-  // IMPORTANT: sendBeacon only works with CORS-safelisted Content-Types
-  // (text/plain, application/x-www-form-urlencoded, multipart/form-data).
-  // application/json requires preflight which sendBeacon doesn't support — it
-  // silently drops the request. We use text/plain here; server parses JSON from
-  // text/plain bodies on this endpoint.
-  function sendSubmittedSignal() {
-    try {
-      var payload = JSON.stringify({ page: 0, submitted: true, form: '261015780644152', ts: Date.now() });
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(API_ENDPOINT, new Blob([payload], { type: 'text/plain' }));
-      } else {
-        fetch(API_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-          keepalive: true
-        }).catch(function() {});
-      }
-    } catch (e) {
+  // Collect all field values from the live DOM
+  function collectFields() {
+    var data = {};
+
+    // Text inputs by name
+    var nameMap = {
+      'q32_firstName': 'firstName',
+      'q33_lastName': 'lastName',
+      'q36_emailAddress': 'email',
+      'q93_dateOfBirth': 'dob',
+      'q112_memberId': 'memberId'
+    };
+    for (var qName in nameMap) {
+      var el = form.querySelector('[name="' + qName + '"]');
+      if (el && el.value) data[nameMap[qName]] = el.value.trim();
     }
+
+    // Phone — JotForm phone widget uses name="q89_phoneNumber[full]"
+    var phoneEl = form.querySelector('[name="q89_phoneNumber[full]"]');
+    if (phoneEl && phoneEl.value) data.phone = phoneEl.value.trim();
+
+    // Radio buttons — find checked value
+    var radioMap = {
+      'q136_productSelection': 'products',
+      'q137_cgmScenario': 'cgmScenario',
+      'q138_currentMonitor': 'currentMonitor',
+      'q76_pumpType': 'pumpType',
+      'q139_pumpScenario': 'pumpScenario',
+      'q46_insProv9x': 'insuranceProvider',
+      'q47_planType': 'planType'
+    };
+    for (var rName in radioMap) {
+      var checked = form.querySelector('input[name="' + rName + '"]:checked');
+      if (checked) data[radioMap[rName]] = checked.value;
+    }
+
+    // Doctor widget — JSON from hidden field
+    var docInput = document.getElementById('input_119');
+    if (docInput && docInput.value) {
+      try {
+        var doc = JSON.parse(docInput.value);
+        if (doc && doc.action) data.doctor = doc;
+      } catch (e) { /* not valid JSON yet */ }
+    }
+
+    return data;
   }
 
-  // Intercept the form submit
-  form.setAttribute('target', 'jf-submit-frame');
+  // Send the "submitted" signal so backend marks fingerprint and queues partial deletion
+  function sendSubmittedSignal(fields) {
+    try {
+      var payload = JSON.stringify({
+        page: 0, submitted: true, form: '261015780644152', ts: Date.now(),
+        fn: fields.firstName || '', ln: fields.lastName || '',
+        em: fields.email || '', ph: fields.phone || ''
+      });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(TRACK_URL, new Blob([payload], { type: 'text/plain' }));
+      } else {
+        fetch(TRACK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: payload, keepalive: true }).catch(function() {});
+      }
+    } catch (e) { /* best effort */ }
+  }
 
-  // Listen for the hidden iframe to load (means JotForm processed the submission)
-  var iframe = document.getElementById('jf-submit-frame');
-  var submitPending = false;
+  // Basic client-side validation
+  function validate(fields) {
+    var missing = [];
+    if (!fields.firstName)         missing.push('First Name');
+    if (!fields.lastName)          missing.push('Last Name');
+    if (!fields.email)             missing.push('Email');
+    if (!fields.phone)             missing.push('Phone Number');
+    if (!fields.dob)               missing.push('Date of Birth');
+    if (!fields.products)          missing.push('Product Selection');
+    if (!fields.insuranceProvider) missing.push('Insurance Provider');
+    return missing;
+  }
 
-  form.addEventListener('submit', function() {
-    submitPending = true;
-    formSubmitted = true; // kill all tracking beacons immediately
+  // Prevent JotForm's default submit — we handle it ourselves
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Kill tracking immediately
+    formSubmitted = true;
     clearTimeout(debounceTimer);
     clearTimeout(pageSettleTimer);
     pendingPageSend = null;
-  });
 
-  iframe.addEventListener('load', function() {
-    if (!submitPending) return; // Ignore initial empty load
+    var fields = collectFields();
 
-    // Send the submitted signal to delete partial lead
-    sendSubmittedSignal();
+    // Validate
+    var missing = validate(fields);
+    if (missing.length) {
+      alert('Please fill in: ' + missing.join(', '));
+      formSubmitted = false; // let tracking resume if they go back
+      return;
+    }
 
-    // Hide the form, show thank-you
-    form.style.display = 'none';
-    var srStatus = document.getElementById('sr-status-message');
-    if (srStatus) srStatus.style.display = 'none';
-    var thankyou = document.getElementById('mm-thankyou');
-    if (thankyou) thankyou.style.display = 'block';
+    // Disable the submit button to prevent double-clicks
+    var submitBtn = form.querySelector('.form-submit-button');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting...';
+    }
 
-    // Scroll to top
-    window.scrollTo(0, 0);
+    // Send the submitted signal (marks fingerprint, queues partial deletion)
+    sendSubmittedSignal(fields);
+
+    // POST directly to Railway
+    fetch(SUBMIT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields)
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        // Success — show thank-you page
+        form.style.display = 'none';
+        var srStatus = document.getElementById('sr-status-message');
+        if (srStatus) srStatus.style.display = 'none';
+        var thankyou = document.getElementById('mm-thankyou');
+        if (thankyou) thankyou.style.display = 'block';
+        window.scrollTo(0, 0);
+      } else {
+        throw new Error(data.error || 'Unknown error');
+      }
+    })
+    .catch(function(err) {
+      // Show error to user and re-enable submit
+      alert('Something went wrong submitting your form. Please try again.\n\n(' + (err.message || 'Network error') + ')');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit';
+      }
+      formSubmitted = false;
+    });
   });
 })();
 </script>
