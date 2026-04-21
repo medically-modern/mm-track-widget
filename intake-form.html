@@ -2379,7 +2379,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 (function() {
   'use strict';
 
-  const DEBUG = true;
+  const DEBUG = false;
   const API_ENDPOINT = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
   const DEBOUNCE_MS = 3000;        // Min gap between sends for field changes
   const PAGE_SETTLE_MS = 300;      // Wait for DOM to settle after page transition
@@ -2795,9 +2795,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
           keepalive: true
         }).catch(function() {});
       }
-      console.log('[mm-track] Sent submitted signal');
     } catch (e) {
-      console.warn('[mm-track] Failed to send submitted signal', e);
     }
   }
 
@@ -2810,12 +2808,10 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 
   form.addEventListener('submit', function() {
     submitPending = true;
-    console.log('[mm-track] Form submit intercepted — posting to hidden iframe');
   });
 
   iframe.addEventListener('load', function() {
     if (!submitPending) return; // Ignore initial empty load
-    console.log('[mm-track] JotForm submission complete — showing thank-you page');
 
     // Send the submitted signal to delete partial lead
     sendSubmittedSignal();
