@@ -1,14 +1,20 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>MM Track</title>
 <style>*{margin:0;padding:0;}</style>
-<script src="https://cdn.jotfor.ms/js/vendor/JotFormCustomWidget.min.js"></script>
 </head><body>
 <script>
 (function() {
-  // Medically Modern — Form Drop-off Tracker V3
-  // Uses JFCustomWidget API to read field values from the parent JotForm.
-  // Fires a single beacon when this widget's page becomes visible,
-  // including whatever patient data has been entered so far.
+  // Medically Modern — Form Drop-off Tracker V4
+  // Uses proven raw postMessage pattern (same as doctor widget) to read
+  // field values from the parent JotForm. JFCustomWidget.getFieldsValueById
+  // was unreliable; raw postMessage with fields:capture is battle-tested.
+  //
+  // Flow:
+  // 1. Widget iframe loads (all 7 preloaded by JotForm, hidden pages are 0x0)
+  // 2. On visibility (user navigates to this page), sends fields:capture postMessage
+  // 3. Parent JotForm responds with field values via event:receiver
+  // 4. Widget beacons field data + page number to Railway /api/intake/track
+  // 5. Backend creates/updates Monday "Partial Leads" row
 
   var API = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
   var fired = false;
@@ -16,17 +22,13 @@
   var params = new URLSearchParams(window.location.search);
   var page   = params.get('page') || '0';
   var formId = params.get('form') || '';
+  // JotForm appends qid= to the widget URL automatically
+  var qid    = params.get('qid') || '';
 
-  // Field QIDs on the JotForm (same on both live and clone forms):
-  // Q32=firstName, Q33=lastName, Q36=email, Q89=phone, Q93=dob, Q136=productSelection
-  var FIELD_IDS = [32, 33, 36, 89, 93, 136];
+  // Captured field values (populated by postMessage response)
+  var captured = {};
 
-  function isVisible() {
-    return document.documentElement.clientWidth > 0 &&
-           document.documentElement.clientHeight > 0;
-  }
-
-  function sendBeacon(fields) {
+  function fireBeacon() {
     if (fired) return;
     fired = true;
 
@@ -36,35 +38,13 @@
       ts: Date.now()
     };
 
-    // Map QID responses to our field keys.
-    // JFCustomWidget returns values keyed by QID. Text fields come as strings,
-    // phone fields as objects like { area: "555", phone: "1234567" } or { full: "..." },
-    // radio fields as the selected option text.
-    if (fields) {
-      var fn  = fields['32'];
-      var ln  = fields['33'];
-      var em  = fields['36'];
-      var ph  = fields['89'];
-      var dob = fields['93'];
-      var prd = fields['136'];
-
-      // Phone can come as object {area, phone} or string
-      if (ph && typeof ph === 'object') {
-        ph = (ph.area || '') + (ph.phone || '');
-        if (!ph) ph = ph.full || '';
-      }
-      // Email can come as object or string
-      if (em && typeof em === 'object') {
-        em = em.email || em.value || '';
-      }
-
-      if (fn)  payload.fn  = String(fn).trim();
-      if (ln)  payload.ln  = String(ln).trim();
-      if (em)  payload.em  = String(em).trim();
-      if (ph)  payload.ph  = String(ph).trim();
-      if (dob) payload.dob = String(dob).trim();
-      if (prd) payload.prd = String(prd).trim();
-    }
+    // Add captured fields
+    if (captured.firstName)        payload.fn  = captured.firstName;
+    if (captured.lastName)         payload.ln  = captured.lastName;
+    if (captured.emailAddress)     payload.em  = captured.emailAddress;
+    if (captured.phoneNumber)      payload.ph  = captured.phoneNumber;
+    if (captured.dateOfBirth)      payload.dob = captured.dateOfBirth;
+    if (captured.productSelection) payload.prd = captured.productSelection;
 
     fetch(API, {
       method: 'POST',
@@ -73,43 +53,82 @@
     }).catch(function() {});
   }
 
-  function fetchFieldsAndSend() {
-    // Try to read field values via JFCustomWidget API
+  function isVisible() {
+    return document.documentElement.clientWidth > 0 &&
+           document.documentElement.clientHeight > 0;
+  }
+
+  // ---- Field capture via raw postMessage (proven pattern from doctor widget) ----
+  var captureId = 'trk_' + page + '_' + Date.now();
+  var capturedFields = false;
+
+  // Listen for response from parent JotForm
+  window.addEventListener('message', function(e) {
     try {
-      JFCustomWidget.getFieldsValueById(FIELD_IDS, function(data) {
-        sendBeacon(data || {});
-      });
-      // Fallback: if getFieldsValueById doesn't call back within 2s, send without fields
-      setTimeout(function() { sendBeacon(null); }, 2000);
-    } catch(e) {
-      // JFCustomWidget not available — send beacon without field data
-      sendBeacon(null);
-    }
-  }
-
-  // Wait for JFCustomWidget to be ready before reading fields
-  function onReady() {
-    if (isVisible()) {
-      fetchFieldsAndSend();
-    } else {
-      var poll = setInterval(function() {
-        if (isVisible()) {
-          clearInterval(poll);
-          fetchFieldsAndSend();
+      var d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+      if (d && d.type === 'event:receiver' && d.eventID === captureId && d.data) {
+        capturedFields = true;
+        var fields = d.data;
+        for (var i = 0; i < fields.length; i++) {
+          var name = fields[i].selector || '';
+          var val  = fields[i].value || '';
+          if (val) captured[name] = String(val).trim();
         }
-      }, 500);
-      setTimeout(function() { clearInterval(poll); }, 600000);
-    }
+      }
+    } catch (_) {}
+  });
+
+  // Send fields:capture request to parent JotForm.
+  // Request by field name — works for control_textbox, control_email, control_radio.
+  // control_phone may return empty (known JotForm quirk from doctor widget testing).
+  var fieldNames = ['firstName', 'lastName', 'emailAddress', 'phoneNumber', 'dateOfBirth', 'productSelection'];
+  var captureMsg = JSON.stringify({
+    type: 'fields:capture',
+    eventID: captureId,
+    identifier: 'name',
+    fields: fieldNames,
+    qid: qid || page
+  });
+
+  function sendCapture() {
+    if (capturedFields) return;
+    try {
+      window.parent.postMessage(captureMsg, '*');
+    } catch (_) {}
   }
 
-  // JFCustomWidget.subscribe('ready') fires when the widget API is initialized
-  try {
-    JFCustomWidget.subscribe('ready', function() {
-      onReady();
-    });
-  } catch(e) {
-    // If JFCustomWidget script didn't load, fall back to basic behavior
-    onReady();
+  // ---- Visibility-gated beacon firing ----
+  function onPageVisible() {
+    // Request field values aggressively (JotForm can be slow: 500ms to 8s)
+    sendCapture();
+    setTimeout(sendCapture, 500);
+    setTimeout(sendCapture, 2000);
+    setTimeout(sendCapture, 4000);
+
+    // Fire beacon after giving JotForm time to respond with field values.
+    // 3s delay = enough for most responses. If fields haven't arrived, beacon
+    // fires with whatever we have (possibly empty — just a funnel hit).
+    setTimeout(function() {
+      fireBeacon();
+    }, 3000);
+
+    // Safety net: if the 3s beacon somehow didn't fire, try at 8s
+    setTimeout(function() {
+      fireBeacon();
+    }, 8000);
+  }
+
+  if (isVisible()) {
+    onPageVisible();
+  } else {
+    var poll = setInterval(function() {
+      if (isVisible()) {
+        clearInterval(poll);
+        onPageVisible();
+      }
+    }, 500);
+    // Stop polling after 10 minutes
+    setTimeout(function() { clearInterval(poll); }, 600000);
   }
 })();
 </script>
