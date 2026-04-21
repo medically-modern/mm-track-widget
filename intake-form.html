@@ -2748,6 +2748,32 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 </script>
 
 <!-- Hidden iframe for JotForm submission (form submits here, user stays on our page) -->
+<!-- UnitedHealthcare sorry message -->
+<style>
+  #id_46 label[for="input_46_1"].uhc-sorry {
+    padding-left: 16px !important;
+    font-size: 14px !important;
+    color: #c0392b !important;
+    font-weight: 500 !important;
+  }
+  #id_46 label[for="input_46_1"].uhc-sorry::before {
+    display: none !important;
+  }
+</style>
+<script>
+(function() {
+  var uhcRadio = document.getElementById('input_46_1');
+  var uhcLabel = document.getElementById('label_input_46_1');
+  if (!uhcRadio || !uhcLabel) return;
+  uhcRadio.addEventListener('change', function() {
+    if (uhcRadio.checked) {
+      uhcLabel.textContent = "Sorry! We no longer take UnitedHealthcare.";
+      uhcLabel.classList.add('uhc-sorry');
+    }
+  });
+})();
+</script>
+
 <iframe id="jf-submit-frame" name="jf-submit-frame" style="display:none" aria-hidden="true"></iframe>
 
 <!-- Thank-you page (shown after submit, hidden initially) -->
