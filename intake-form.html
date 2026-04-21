@@ -2754,13 +2754,17 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 
   var API_ENDPOINT = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
 
-  // Send the "submitted" signal to the tracking API so backend deletes partial lead
+  // Send the "submitted" signal to the tracking API so backend deletes partial lead.
+  // IMPORTANT: sendBeacon only works with CORS-safelisted Content-Types
+  // (text/plain, application/x-www-form-urlencoded, multipart/form-data).
+  // application/json requires preflight which sendBeacon doesn't support — it
+  // silently drops the request. We use text/plain here; server parses JSON from
+  // text/plain bodies on this endpoint.
   function sendSubmittedSignal() {
     try {
       var payload = JSON.stringify({ page: 0, submitted: true, form: '261015780644152', ts: Date.now() });
-      // Use sendBeacon for reliability (fires even during navigation)
       if (navigator.sendBeacon) {
-        navigator.sendBeacon(API_ENDPOINT, new Blob([payload], { type: 'application/json' }));
+        navigator.sendBeacon(API_ENDPOINT, new Blob([payload], { type: 'text/plain' }));
       } else {
         fetch(API_ENDPOINT, {
           method: 'POST',
