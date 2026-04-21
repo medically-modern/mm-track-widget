@@ -1424,13 +1424,10 @@ li.form-line[data-type="control_button"] .form-buttons-wrapper {
 }
 
 /* Pull the Back-sibling row up to overlap the Submit row.
-   -44px matches the button height so they share a baseline.
-   Bottom margin/padding adds breathing room below the button pair
-   so the mobile browser toolbar doesn't clip them. */
+   -44px matches the button height so they share a baseline. */
 li.form-line[data-type="control_button"] ~ li.form-input-wide {
   margin-top: -44px !important;
-  margin-bottom: 48px !important;
-  padding: 0 0 16px 0 !important;
+  padding: 0 !important;
   min-height: 44px !important;
   position: relative !important;
   z-index: 1 !important;
