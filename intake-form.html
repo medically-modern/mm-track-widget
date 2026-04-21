@@ -2506,16 +2506,18 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
       data.mid = getInputValue('memberId');
 
       // Doctor widget (Q119) — JSON blob with npi, displayName, clinic, phone, address
+      // Actions: confirmed_match | confirmed_typed_name | send_later
       try {
         var docInput = document.getElementById('input_119');
         if (docInput && docInput.value) {
           var doc = JSON.parse(docInput.value);
-          if (doc && doc.action === 'confirmed_match') {
-            data.docName  = doc.displayName || '';
-            data.docNpi   = doc.npi || '';
+          if (doc && doc.action) {
+            data.docName   = doc.displayName || '';
+            data.docNpi    = doc.npi || '';
             data.docClinic = doc.clinic || '';
-            data.docPhone = doc.phone || '';
-            data.docAddr  = doc.address || '';
+            data.docPhone  = doc.phone || '';
+            data.docAddr   = doc.address || '';
+            data.docAction = doc.action || '';
           }
         }
       } catch (docErr) {
@@ -2552,7 +2554,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         ins: fieldData.ins, plan: fieldData.plan, mid: fieldData.mid,
         docName: fieldData.docName, docNpi: fieldData.docNpi,
         docClinic: fieldData.docClinic, docPhone: fieldData.docPhone,
-        docAddr: fieldData.docAddr
+        docAddr: fieldData.docAddr, docAction: fieldData.docAction
       };
 
       log('Sending tracking (page ' + pageNum + ', beacon: ' + !!isBeacon + ')', payload);
