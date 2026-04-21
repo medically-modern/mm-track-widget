@@ -1,14 +1,14 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>MM Track</title>
 <style>*{margin:0;padding:0;}</style>
+<script src="https://cdn.jotfor.ms/js/vendor/JotFormCustomWidget.min.js"></script>
 </head><body>
 <script>
 (function() {
-  // Medically Modern — Form Drop-off Tracker V2
-  // Fires a single beacon when this widget's page becomes visible.
-  // Now captures field values passed via URL params by JotForm token interpolation.
-  // JotForm preloads ALL widget iframes at once, but hidden-page iframes
-  // have 0x0 dimensions. We poll for non-zero size to detect page activation.
+  // Medically Modern — Form Drop-off Tracker V3
+  // Uses JFCustomWidget API to read field values from the parent JotForm.
+  // Fires a single beacon when this widget's page becomes visible,
+  // including whatever patient data has been entered so far.
 
   var API = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
   var fired = false;
@@ -17,30 +17,54 @@
   var page   = params.get('page') || '0';
   var formId = params.get('form') || '';
 
-  // Field values interpolated by JotForm from the form state at render time.
-  // Pages 2+ will have these filled in because page 1 fields are required.
-  var fn  = params.get('fn')  || '';  // firstName
-  var ln  = params.get('ln')  || '';  // lastName
-  var em  = params.get('em')  || '';  // email
-  var ph  = params.get('ph')  || '';  // phone
-  var dob = params.get('dob') || '';  // dateOfBirth
-  var prd = params.get('prd') || '';  // productSelection
+  // Field QIDs on the JotForm (same on both live and clone forms):
+  // Q32=firstName, Q33=lastName, Q36=email, Q89=phone, Q93=dob, Q136=productSelection
+  var FIELD_IDS = [32, 33, 36, 89, 93, 136];
 
-  function fireBeacon() {
+  function isVisible() {
+    return document.documentElement.clientWidth > 0 &&
+           document.documentElement.clientHeight > 0;
+  }
+
+  function sendBeacon(fields) {
     if (fired) return;
     fired = true;
+
     var payload = {
       page: parseInt(page, 10),
       form: formId,
       ts: Date.now()
     };
-    // Only include fields that have actual values (not empty JotForm tokens)
-    if (fn && fn !== '{firstName}')            payload.fn  = fn;
-    if (ln && ln !== '{lastName}')             payload.ln  = ln;
-    if (em && em !== '{emailAddress}')         payload.em  = em;
-    if (ph && ph !== '{phoneNumber:full}')     payload.ph  = ph;
-    if (dob && dob !== '{dateOfBirth}')        payload.dob = dob;
-    if (prd && prd !== '{productSelection}')   payload.prd = prd;
+
+    // Map QID responses to our field keys.
+    // JFCustomWidget returns values keyed by QID. Text fields come as strings,
+    // phone fields as objects like { area: "555", phone: "1234567" } or { full: "..." },
+    // radio fields as the selected option text.
+    if (fields) {
+      var fn  = fields['32'];
+      var ln  = fields['33'];
+      var em  = fields['36'];
+      var ph  = fields['89'];
+      var dob = fields['93'];
+      var prd = fields['136'];
+
+      // Phone can come as object {area, phone} or string
+      if (ph && typeof ph === 'object') {
+        ph = (ph.area || '') + (ph.phone || '');
+        if (!ph) ph = ph.full || '';
+      }
+      // Email can come as object or string
+      if (em && typeof em === 'object') {
+        em = em.email || em.value || '';
+      }
+
+      if (fn)  payload.fn  = String(fn).trim();
+      if (ln)  payload.ln  = String(ln).trim();
+      if (em)  payload.em  = String(em).trim();
+      if (ph)  payload.ph  = String(ph).trim();
+      if (dob) payload.dob = String(dob).trim();
+      if (prd) payload.prd = String(prd).trim();
+    }
 
     fetch(API, {
       method: 'POST',
@@ -49,21 +73,43 @@
     }).catch(function() {});
   }
 
-  function isVisible() {
-    return document.documentElement.clientWidth > 0 &&
-           document.documentElement.clientHeight > 0;
+  function fetchFieldsAndSend() {
+    // Try to read field values via JFCustomWidget API
+    try {
+      JFCustomWidget.getFieldsValueById(FIELD_IDS, function(data) {
+        sendBeacon(data || {});
+      });
+      // Fallback: if getFieldsValueById doesn't call back within 2s, send without fields
+      setTimeout(function() { sendBeacon(null); }, 2000);
+    } catch(e) {
+      // JFCustomWidget not available — send beacon without field data
+      sendBeacon(null);
+    }
   }
 
-  if (isVisible()) {
-    fireBeacon();
-  } else {
-    var poll = setInterval(function() {
-      if (isVisible()) {
-        clearInterval(poll);
-        fireBeacon();
-      }
-    }, 500);
-    setTimeout(function() { clearInterval(poll); }, 600000);
+  // Wait for JFCustomWidget to be ready before reading fields
+  function onReady() {
+    if (isVisible()) {
+      fetchFieldsAndSend();
+    } else {
+      var poll = setInterval(function() {
+        if (isVisible()) {
+          clearInterval(poll);
+          fetchFieldsAndSend();
+        }
+      }, 500);
+      setTimeout(function() { clearInterval(poll); }, 600000);
+    }
+  }
+
+  // JFCustomWidget.subscribe('ready') fires when the widget API is initialized
+  try {
+    JFCustomWidget.subscribe('ready', function() {
+      onReady();
+    });
+  } catch(e) {
+    // If JFCustomWidget script didn't load, fall back to basic behavior
+    onReady();
   }
 })();
 </script>
