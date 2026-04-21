@@ -4,10 +4,13 @@
 </head><body>
 <script>
 (function() {
-  // Medically Modern — Form Drop-off Tracker V4
+  // Medically Modern — Form Drop-off Tracker V5
   // Uses proven raw postMessage pattern (same as doctor widget) to read
-  // field values from the parent JotForm. JFCustomWidget.getFieldsValueById
-  // was unreliable; raw postMessage with fields:capture is battle-tested.
+  // field values from the parent JotForm.
+  //
+  // V5: frameSrc is now BARE (no custom query params) — matches doctor widget
+  // config exactly so JotForm sets up the postMessage bridge properly.
+  // Page number is derived from QID→page mapping instead of URL params.
   //
   // Flow:
   // 1. Widget iframe loads (all 7 preloaded by JotForm, hidden pages are 0x0)
@@ -20,10 +23,18 @@
   var fired = false;
 
   var params = new URLSearchParams(window.location.search);
-  var page   = params.get('page') || '0';
-  var formId = params.get('form') || '';
-  // JotForm appends qid= to the widget URL automatically
+  // JotForm appends qid= automatically when frameSrc is bare (like doctor widget)
   var qid    = params.get('qid') || '';
+
+  // QID → page mapping (clone form: Q152-Q158 = pages 1-7, live form: TBD)
+  var QID_PAGE_MAP = {
+    // Clone form 261100607354042
+    '152': 1, '153': 2, '154': 3, '155': 4, '156': 5, '157': 6, '158': 7
+  };
+  var page = QID_PAGE_MAP[qid] || params.get('page') || '0';
+
+  // formId from JotForm's ref param, or fallback
+  var formId = params.get('ref') || params.get('form') || '';
 
   // Captured field values (populated by postMessage response)
   var captured = {};
