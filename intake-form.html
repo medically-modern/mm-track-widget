@@ -2374,24 +2374,26 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   </script>
 </form>
 <div id="sr-status-message" class="sr-only" role="status" aria-live="polite" style="font-size: 0;"></div>
-<!-- MM Real-time Tracking Script (all fields) -->
+<!-- MM Real-time Tracking Script v2 (debounce fix) -->
 <script>
 (function() {
   'use strict';
 
   const DEBUG = true;
   const API_ENDPOINT = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
-  const DEBOUNCE_MS = 3000;
-  const FORM_ID = '261015780644152'; // Live form ID
+  const DEBOUNCE_MS = 3000;        // Min gap between sends for field changes
+  const PAGE_SETTLE_MS = 300;      // Wait for DOM to settle after page transition
+  const FORM_ID = '261015780644152';
 
-  // State management
+  // State
   let lastSendTime = 0;
   let currentPage = 1;
   let debounceTimer = null;
+  let pageSettleTimer = null;
+  let sendInFlight = false;
   let formElement = null;
   let pageObserver = null;
 
-  // Utility: safe logging
   function log(msg, data) {
     if (DEBUG) {
       if (data !== undefined) {
@@ -2402,7 +2404,6 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     }
   }
 
-  // Utility: get form ID from DOM
   function detectFormId() {
     try {
       var form = document.querySelector('form.jotform-form');
@@ -2420,17 +2421,15 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     return FORM_ID;
   }
 
-  // Utility: detect current page number using landmark question IDs
-  // Each page section contains unique QIDs — map them to logical page numbers
-  // so conditional pages don't shift the numbering.
+  // Page detection via landmark QIDs (immune to conditional page reordering)
   var PAGE_LANDMARKS = [
-    { qid: 'id_136', page: 1 },  // Products (Q136)
-    { qid: 'id_140', page: 2 },  // Review (Q140)
-    { qid: 'id_32',  page: 3 },  // Patient Info — First Name (Q32)
-    { qid: 'id_119', page: 4 },  // Doctor widget (Q119)
-    { qid: 'id_46',  page: 5 },  // Insurance (Q46)
-    { qid: 'id_64',  page: 6 },  // Coverage (Q64)
-    { qid: 'id_112', page: 7 }   // Member ID (Q112)
+    { qid: 'id_136', page: 1 },  // Products
+    { qid: 'id_140', page: 2 },  // Review
+    { qid: 'id_32',  page: 3 },  // Patient Info
+    { qid: 'id_119', page: 4 },  // Doctor
+    { qid: 'id_46',  page: 5 },  // Insurance
+    { qid: 'id_64',  page: 6 },  // Coverage
+    { qid: 'id_112', page: 7 }   // Member ID
   ];
 
   function detectCurrentPage() {
@@ -2441,13 +2440,11 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         var section = pageSections[i];
         var style = window.getComputedStyle(section);
         if (style.display !== 'none' && section.offsetParent !== null) {
-          // Match this visible section to a logical page via landmark QID
           for (var j = 0; j < PAGE_LANDMARKS.length; j++) {
             if (section.querySelector('#' + PAGE_LANDMARKS[j].qid)) {
               return PAGE_LANDMARKS[j].page;
             }
           }
-          // Fallback: use DOM index + 1 if no landmark matched
           return i + 1;
         }
       }
@@ -2455,18 +2452,16 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     return currentPage;
   }
 
-  // Get value of a checked radio button by name pattern
+  // --- Field extraction ---
+
   function getRadioValue(namePattern) {
     try {
       var checked = document.querySelector('input[name*="' + namePattern + '"]:checked');
-      if (checked) {
-        return checked.value || '';
-      }
+      if (checked) return checked.value || '';
     } catch (e) {}
     return '';
   }
 
-  // Get value of a text/email input by name pattern
   function getInputValue(namePattern) {
     try {
       var input = document.querySelector('input[name*="' + namePattern + '"]');
@@ -2475,97 +2470,55 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     return '';
   }
 
-  // Extract ALL field values from DOM
   function extractFieldData() {
     var data = {
-      // Contact info
-      fn: '',    // first name
-      ln: '',    // last name
-      em: '',    // email
-      ph: '',    // phone
-      dob: '',   // date of birth
-
-      // Product selections (radios)
-      prd: '',   // product selection (Q136)
-      cgmScn: '',// CGM scenario (Q137)
-      mon: '',   // current monitor (Q138)
-      pump: '',  // pump type (Q76)
-      pmpScn: '',// pump scenario (Q139)
-
-      // Insurance
-      ins: '',   // insurance provider (Q46)
-      plan: '',  // plan type (Q47)
-      mid: ''    // member ID (Q112)
+      fn: '', ln: '', em: '', ph: '', dob: '',
+      prd: '', cgmScn: '', mon: '', pump: '', pmpScn: '',
+      ins: '', plan: '', mid: ''
     };
-
     try {
-      // === Contact Info ===
-      // First Name - Q32
-      var fnInput = document.querySelector('input[id="input_32"]');
-      if (!fnInput) fnInput = document.querySelector('input[name*="firstName"]');
+      // Contact info
+      var fnInput = document.querySelector('input[id="input_32"]') || document.querySelector('input[name*="firstName"]');
       if (fnInput) data.fn = fnInput.value || '';
 
-      // Last Name - Q33
-      var lnInput = document.querySelector('input[id="input_33"]');
-      if (!lnInput) lnInput = document.querySelector('input[name*="lastName"]');
+      var lnInput = document.querySelector('input[id="input_33"]') || document.querySelector('input[name*="lastName"]');
       if (lnInput) data.ln = lnInput.value || '';
 
-      // Email - Q36
-      var emailInput = document.querySelector('input[name*="emailAddress"]');
-      if (!emailInput) emailInput = document.querySelector('input[name*="email"]');
+      var emailInput = document.querySelector('input[name*="emailAddress"]') || document.querySelector('input[name*="email"]');
       if (emailInput) data.em = emailInput.value || '';
 
-      // Phone - Q89 (full number)
-      var phoneInput = document.querySelector('input[name="q89_phoneNumber[full]"]');
-      if (!phoneInput) phoneInput = document.querySelector('input[name*="phoneNumber"][name*="full"]');
-      if (!phoneInput) phoneInput = document.querySelector('input[name*="phone"]');
+      var phoneInput = document.querySelector('input[name="q89_phoneNumber[full]"]') || document.querySelector('input[name*="phoneNumber"][name*="full"]');
       if (phoneInput) data.ph = phoneInput.value || '';
 
-      // Date of Birth - Q93 (single text input, format MM/DD/YYYY)
-      var dobInput = document.querySelector('input[id="input_93"]');
-      if (!dobInput) dobInput = document.querySelector('input[name*="dateOfBirth"]');
+      var dobInput = document.querySelector('input[id="input_93"]') || document.querySelector('input[name*="dateOfBirth"]');
       if (dobInput && dobInput.value) data.dob = dobInput.value;
 
-      // === Product Selections (radios) ===
-      // Q136 - Product Selection
+      // Radios
       data.prd = getRadioValue('productSelection');
-
-      // Q137 - CGM Scenario (CGM-only branch)
       data.cgmScn = getRadioValue('cgmScenario');
-
-      // Q138 - Current Monitor (CGM-only branch)
       data.mon = getRadioValue('currentMonitor');
-
-      // Q76 - Pump Type
       data.pump = getRadioValue('pumpType');
-
-      // Q139 - Pump Scenario
       data.pmpScn = getRadioValue('pumpScenario');
-
-      // === Insurance ===
-      // Q46 - Insurance Provider
       data.ins = getRadioValue('insProv');
-
-      // Q47 - Plan Type
       data.plan = getRadioValue('planType');
 
-      // Q112 - Member ID
+      // Member ID
       data.mid = getInputValue('memberId');
-
     } catch (e) {
       log('Error extracting field data', e);
     }
-
     return data;
   }
 
-  // Check if we have any meaningful field data (not just empty strings)
-  function hasFieldData(data) {
-    return data.fn || data.ln || data.em || data.ph || data.prd || data.ins || data.mid;
-  }
+  // --- Sending ---
 
-  // Send tracking data to API
   function sendTracking(pageNum, isBeacon) {
+    // Prevent overlapping non-beacon sends
+    if (!isBeacon && sendInFlight) {
+      log('Send skipped (in-flight)');
+      return;
+    }
+
     try {
       var timestamp = Date.now();
       var formId = detectFormId();
@@ -2575,19 +2528,11 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         page: pageNum,
         form: formId,
         ts: timestamp,
-        fn: fieldData.fn,
-        ln: fieldData.ln,
-        em: fieldData.em,
-        ph: fieldData.ph,
-        dob: fieldData.dob,
-        prd: fieldData.prd,
-        cgmScn: fieldData.cgmScn,
-        mon: fieldData.mon,
-        pump: fieldData.pump,
-        pmpScn: fieldData.pmpScn,
-        ins: fieldData.ins,
-        plan: fieldData.plan,
-        mid: fieldData.mid
+        fn: fieldData.fn, ln: fieldData.ln,
+        em: fieldData.em, ph: fieldData.ph, dob: fieldData.dob,
+        prd: fieldData.prd, cgmScn: fieldData.cgmScn,
+        mon: fieldData.mon, pump: fieldData.pump, pmpScn: fieldData.pmpScn,
+        ins: fieldData.ins, plan: fieldData.plan, mid: fieldData.mid
       };
 
       log('Sending tracking (page ' + pageNum + ', beacon: ' + !!isBeacon + ')', payload);
@@ -2596,6 +2541,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
         navigator.sendBeacon(API_ENDPOINT, blob);
       } else {
+        sendInFlight = true;
         fetch(API_ENDPOINT, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2605,58 +2551,70 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
           log('API response', d);
         }).catch(function(err) {
           log('API request failed', err);
+        }).finally(function() {
+          sendInFlight = false;
         });
       }
 
       lastSendTime = timestamp;
     } catch (e) {
+      sendInFlight = false;
       log('Error sending tracking data', e);
     }
   }
 
-  // Debounced field change handler
-  function onFieldChange() {
-    try {
-      clearTimeout(debounceTimer);
-      var now = Date.now();
-      var timeSinceLastSend = now - lastSendTime;
+  // --- Event handlers ---
 
-      if (timeSinceLastSend >= DEBOUNCE_MS) {
+  // Single debounced handler for ALL field changes.
+  // Coalesces rapid events (change + blur, multiple keystrokes) into one send.
+  function scheduleSend() {
+    clearTimeout(debounceTimer);
+    var now = Date.now();
+    var timeSinceLastSend = now - lastSendTime;
+
+    if (timeSinceLastSend >= DEBOUNCE_MS) {
+      sendTracking(currentPage, false);
+    } else {
+      debounceTimer = setTimeout(function() {
         sendTracking(currentPage, false);
-      } else {
-        debounceTimer = setTimeout(function() {
-          sendTracking(currentPage, false);
-        }, DEBOUNCE_MS - timeSinceLastSend);
-      }
-    } catch (e) {
-      log('Error in field change handler', e);
+      }, DEBOUNCE_MS - timeSinceLastSend);
     }
   }
 
-  // Page change handler
-  function onPageChange() {
-    try {
-      var newPage = detectCurrentPage();
-      if (newPage !== currentPage) {
-        log('Page changed: ' + currentPage + ' → ' + newPage);
-        currentPage = newPage;
-        // Send immediately on page change — captures all field data up to this point
-        sendTracking(newPage, false);
+  // Debounced page change — waits for DOM to settle before detecting page
+  function onMutationBatch() {
+    clearTimeout(pageSettleTimer);
+    pageSettleTimer = setTimeout(function() {
+      try {
+        var newPage = detectCurrentPage();
+        if (newPage !== currentPage) {
+          log('Page changed: ' + currentPage + ' → ' + newPage);
+          currentPage = newPage;
+          // Send once after page settles (captures all field data up to this point)
+          sendTracking(newPage, false);
+        }
+      } catch (e) {
+        log('Error in page change handler', e);
       }
-    } catch (e) {
-      log('Error in page change handler', e);
-    }
+    }, PAGE_SETTLE_MS);
   }
 
-  // Setup field listeners on ALL inputs
+  // --- Setup ---
+
   function setupFieldListeners() {
     try {
       var inputs = document.querySelectorAll(
         'form.jotform-form input, form.jotform-form select, form.jotform-form textarea'
       );
       inputs.forEach(function(input) {
-        input.addEventListener('change', onFieldChange);
-        input.addEventListener('blur', onFieldChange);
+        var type = (input.type || '').toLowerCase();
+        if (type === 'radio' || type === 'checkbox') {
+          // Radios/checkboxes: only fire on 'change' (one event per selection)
+          input.addEventListener('change', scheduleSend);
+        } else {
+          // Text/email/tel/date: fire on 'blur' only (one event when user leaves field)
+          input.addEventListener('blur', scheduleSend);
+        }
       });
       log('Setup listeners on ' + inputs.length + ' input elements');
     } catch (e) {
@@ -2664,28 +2622,27 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     }
   }
 
-  // Setup page change detection via MutationObserver
   function setupPageObserver() {
     try {
-      var container = document.querySelector('ul.form-section');
+      // Observe the form-all container for page section style changes
+      var container = document.querySelector('.form-all');
+      if (!container) container = document.querySelector('ul.form-section');
       if (!container) {
-        // Try parent container
-        container = document.querySelector('.form-all');
-        if (!container) {
-          log('Page section container not found');
-          return;
-        }
+        log('Page section container not found');
+        return;
       }
 
       pageObserver = new MutationObserver(function() {
-        onPageChange();
+        // Batch all mutations into a single debounced page check
+        onMutationBatch();
       });
 
+      // Only watch direct style changes on page sections, not deep subtree
       pageObserver.observe(container, {
         attributes: true,
         subtree: true,
-        attributeFilter: ['style', 'class'],
-        childList: true
+        attributeFilter: ['style'],
+        childList: false
       });
 
       log('Page observer setup complete');
@@ -2694,7 +2651,6 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     }
   }
 
-  // Setup unload beacon
   function setupUnloadBeacon() {
     try {
       window.addEventListener('beforeunload', function() {
@@ -2708,7 +2664,8 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     }
   }
 
-  // Initialize tracking
+  // --- Init ---
+
   function init() {
     try {
       log('Initializing tracking...');
@@ -2729,7 +2686,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
       setupPageObserver();
       setupUnloadBeacon();
 
-      // Send initial beacon after 2 seconds (captures page 1 visit)
+      // Initial beacon after 2s (captures page 1 visit)
       setTimeout(function() {
         log('Initial page 1 beacon');
         sendTracking(currentPage, false);
@@ -2741,7 +2698,6 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     }
   }
 
-  // Wait for DOM to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
