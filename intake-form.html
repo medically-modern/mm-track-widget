@@ -2460,12 +2460,6 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     try {
       var checked = document.querySelector('input[name*="' + namePattern + '"]:checked');
       if (checked) {
-        // Get the label text for this radio (more readable than the raw value)
-        var li = checked.closest('li');
-        if (li) {
-          var label = li.querySelector('label');
-          if (label) return label.textContent.trim();
-        }
         return checked.value || '';
       }
     } catch (e) {}
@@ -2507,12 +2501,12 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     try {
       // === Contact Info ===
       // First Name - Q32
-      var fnInput = document.querySelector('input[id="first_32"]');
+      var fnInput = document.querySelector('input[id="input_32"]');
       if (!fnInput) fnInput = document.querySelector('input[name*="firstName"]');
       if (fnInput) data.fn = fnInput.value || '';
 
       // Last Name - Q33
-      var lnInput = document.querySelector('input[id="last_33"]');
+      var lnInput = document.querySelector('input[id="input_33"]');
       if (!lnInput) lnInput = document.querySelector('input[name*="lastName"]');
       if (lnInput) data.ln = lnInput.value || '';
 
@@ -2527,16 +2521,10 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
       if (!phoneInput) phoneInput = document.querySelector('input[name*="phone"]');
       if (phoneInput) data.ph = phoneInput.value || '';
 
-      // Date of Birth - Q93 (month/day/year sub-fields)
-      var dobMonth = document.querySelector('input[id*="month_93"], select[id*="month_93"]');
-      var dobDay   = document.querySelector('input[id*="day_93"], select[id*="day_93"]');
-      var dobYear  = document.querySelector('input[id*="year_93"], select[id*="year_93"]');
-      if (dobMonth && dobDay && dobYear) {
-        var m = dobMonth.value || '';
-        var d = dobDay.value || '';
-        var y = dobYear.value || '';
-        if (m || d || y) data.dob = m + '/' + d + '/' + y;
-      }
+      // Date of Birth - Q93 (single text input, format MM/DD/YYYY)
+      var dobInput = document.querySelector('input[id="input_93"]');
+      if (!dobInput) dobInput = document.querySelector('input[name*="dateOfBirth"]');
+      if (dobInput && dobInput.value) data.dob = dobInput.value;
 
       // === Product Selections (radios) ===
       // Q136 - Product Selection
