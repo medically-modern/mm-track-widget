@@ -2391,6 +2391,7 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   let debounceTimer = null;
   let pageSettleTimer = null;
   let sendInFlight = false;
+  let formSubmitted = false; // kills all tracking after submit
   let formElement = null;
   let pageObserver = null;
 
@@ -2534,6 +2535,9 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   var pendingPageSend = null; // queued page-change send if blocked by in-flight
 
   function sendTracking(pageNum, isBeacon, isPageChange) {
+    // Once form is submitted, stop all tracking — prevents ghost partial leads
+    if (formSubmitted) return;
+
     // Field-change sends yield to in-flight requests; page-change sends queue instead of dropping
     if (!isBeacon && sendInFlight) {
       if (isPageChange) {
@@ -2821,6 +2825,10 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 
   form.addEventListener('submit', function() {
     submitPending = true;
+    formSubmitted = true; // kill all tracking beacons immediately
+    clearTimeout(debounceTimer);
+    clearTimeout(pageSettleTimer);
+    pendingPageSend = null;
   });
 
   iframe.addEventListener('load', function() {
