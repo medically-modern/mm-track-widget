@@ -2420,7 +2420,19 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
     return FORM_ID;
   }
 
-  // Utility: detect current page number
+  // Utility: detect current page number using landmark question IDs
+  // Each page section contains unique QIDs — map them to logical page numbers
+  // so conditional pages don't shift the numbering.
+  var PAGE_LANDMARKS = [
+    { qid: 'id_136', page: 1 },  // Products (Q136)
+    { qid: 'id_140', page: 2 },  // Review (Q140)
+    { qid: 'id_32',  page: 3 },  // Patient Info — First Name (Q32)
+    { qid: 'id_119', page: 4 },  // Doctor widget (Q119)
+    { qid: 'id_46',  page: 5 },  // Insurance (Q46)
+    { qid: 'id_64',  page: 6 },  // Coverage (Q64)
+    { qid: 'id_112', page: 7 }   // Member ID (Q112)
+  ];
+
   function detectCurrentPage() {
     try {
       var pageSections = document.querySelectorAll('ul.form-section.page-section');
@@ -2429,6 +2441,13 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         var section = pageSections[i];
         var style = window.getComputedStyle(section);
         if (style.display !== 'none' && section.offsetParent !== null) {
+          // Match this visible section to a logical page via landmark QID
+          for (var j = 0; j < PAGE_LANDMARKS.length; j++) {
+            if (section.querySelector('#' + PAGE_LANDMARKS[j].qid)) {
+              return PAGE_LANDMARKS[j].page;
+            }
+          }
+          // Fallback: use DOM index + 1 if no landmark matched
           return i + 1;
         }
       }
