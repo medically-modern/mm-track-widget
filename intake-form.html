@@ -2504,6 +2504,23 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
 
       // Member ID
       data.mid = getInputValue('memberId');
+
+      // Doctor widget (Q119) — JSON blob with npi, displayName, clinic, phone, address
+      try {
+        var docInput = document.getElementById('input_119');
+        if (docInput && docInput.value) {
+          var doc = JSON.parse(docInput.value);
+          if (doc && doc.action === 'confirmed_match') {
+            data.docName  = doc.displayName || '';
+            data.docNpi   = doc.npi || '';
+            data.docClinic = doc.clinic || '';
+            data.docPhone = doc.phone || '';
+            data.docAddr  = doc.address || '';
+          }
+        }
+      } catch (docErr) {
+        log('Could not parse doctor widget value', docErr);
+      }
     } catch (e) {
       log('Error extracting field data', e);
     }
@@ -2532,7 +2549,10 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
         em: fieldData.em, ph: fieldData.ph, dob: fieldData.dob,
         prd: fieldData.prd, cgmScn: fieldData.cgmScn,
         mon: fieldData.mon, pump: fieldData.pump, pmpScn: fieldData.pmpScn,
-        ins: fieldData.ins, plan: fieldData.plan, mid: fieldData.mid
+        ins: fieldData.ins, plan: fieldData.plan, mid: fieldData.mid,
+        docName: fieldData.docName, docNpi: fieldData.docNpi,
+        docClinic: fieldData.docClinic, docPhone: fieldData.docPhone,
+        docAddr: fieldData.docAddr
       };
 
       log('Sending tracking (page ' + pageNum + ', beacon: ' + !!isBeacon + ')', payload);
