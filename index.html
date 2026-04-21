@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>MM Track</title>
+<style>*{margin:0;padding:0;}</style>
+</head><body>
+<script>
+(function() {
+  // Medically Modern — Form Drop-off Tracker
+  // This widget fires a single beacon when it loads, telling the backend
+  // which page the user has reached. No UI, no interaction needed.
+
+  var API = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
+
+  // Read page number from query string: ?page=3
+  var params = new URLSearchParams(window.location.search);
+  var page = params.get('page') || '0';
+  var formId = params.get('form') || '';
+
+  // Fire beacon
+  fetch(API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      page: parseInt(page, 10),
+      form: formId,
+      ts: Date.now()
+    })
+  }).catch(function() {});
+})();
+</script>
+</body></html>
