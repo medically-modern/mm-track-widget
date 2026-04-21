@@ -5,26 +5,51 @@
 <script>
 (function() {
   // Medically Modern — Form Drop-off Tracker
-  // This widget fires a single beacon when it loads, telling the backend
-  // which page the user has reached. No UI, no interaction needed.
+  // Fires a single beacon when this widget's page becomes visible.
+  // JotForm preloads ALL widget iframes at once, but hidden-page iframes
+  // have 0x0 dimensions. We poll for non-zero size to detect page activation.
 
   var API = 'https://mm-doctor-api-production.up.railway.app/api/intake/track';
+  var fired = false;
 
-  // Read page number from query string: ?page=3
   var params = new URLSearchParams(window.location.search);
   var page = params.get('page') || '0';
   var formId = params.get('form') || '';
 
-  // Fire beacon
-  fetch(API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      page: parseInt(page, 10),
-      form: formId,
-      ts: Date.now()
-    })
-  }).catch(function() {});
+  function fireBeacon() {
+    if (fired) return;
+    fired = true;
+    fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        page: parseInt(page, 10),
+        form: formId,
+        ts: Date.now()
+      })
+    }).catch(function() {});
+  }
+
+  function isVisible() {
+    // JotForm sets hidden-page iframes to 0x0. Check our own viewport.
+    return document.documentElement.clientWidth > 0 &&
+           document.documentElement.clientHeight > 0;
+  }
+
+  // Immediate check — if already visible (page 1 on load), fire now.
+  if (isVisible()) {
+    fireBeacon();
+  } else {
+    // Poll every 500ms for visibility (page navigation).
+    var poll = setInterval(function() {
+      if (isVisible()) {
+        clearInterval(poll);
+        fireBeacon();
+      }
+    }, 500);
+    // Stop polling after 10 minutes (user abandoned form).
+    setTimeout(function() { clearInterval(poll); }, 600000);
+  }
 })();
 </script>
 </body></html>
