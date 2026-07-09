@@ -3041,5 +3041,86 @@ JotForm.paymentExtrasOnTheFly([null,null,null,null,null,null,null,null,null,null
   });
 })();
 </script>
+<script>
+/* === MM CUSTOM: DOCTOR PAGE GATE ===
+   Require a doctor NAME and a COMPLETE 10-digit phone before the Doctor page's
+   Next button advances. The doctor fields live in the embedded widget (q119),
+   a cross-origin iframe, so it postMessages its completeness; we also parse the
+   value JotForm mirrors into the hidden input as a fallback. */
+(function () {
+  var complete = false;
+
+  function digits(s) { return String(s == null ? '' : s).replace(/\D/g, ''); }
+
+  // Fallback: the widget's JSON value that JotForm mirrors into the hidden input.
+  function completeFromHidden() {
+    var inp = document.getElementById('input_119');
+    if (!inp || !inp.value) return false;
+    try {
+      var v = JSON.parse(inp.value);
+      return !!(v && v.displayName && String(v.displayName).trim()) && digits(v.phone).length === 10;
+    } catch (e) { return false; }
+  }
+
+  function isComplete() { return complete || completeFromHidden(); }
+
+  // The Doctor page's Next button == the pagebreak-next inside q119's page.
+  function nextBtn() {
+    var w = document.getElementById('id_119');
+    var page = w && w.closest ? w.closest('.page-section') : null;
+    return page ? page.querySelector('.form-pagebreak-next') : null;
+  }
+
+  function msgEl() {
+    var host = document.getElementById('cid_119');
+    if (!host) return null;
+    var el = document.getElementById('mm-doctor-gate-msg');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'mm-doctor-gate-msg';
+      el.setAttribute('role', 'alert');
+      el.style.cssText = 'display:none;color:#b91c1c;font-size:13px;line-height:1.4;margin:8px auto 0;text-align:center;max-width:520px;';
+      el.textContent = "Please enter your doctor's name and a complete phone number to continue.";
+      host.appendChild(el);
+    }
+    return el;
+  }
+
+  function paint() {
+    var btn = nextBtn();
+    if (!btn) return;
+    var ok = isComplete();
+    btn.style.opacity = ok ? '' : '0.5';
+    btn.style.cursor = ok ? '' : 'not-allowed';
+    if (ok) { var m = document.getElementById('mm-doctor-gate-msg'); if (m) m.style.display = 'none'; }
+  }
+
+  window.addEventListener('message', function (e) {
+    var d = e && e.data;
+    if (d && typeof d === 'object' && d.mmDoctor && typeof d.mmDoctor.complete === 'boolean') {
+      complete = d.mmDoctor.complete;
+      paint();
+    }
+  });
+
+  // Capture phase so this runs before JotForm's own page-advance handler.
+  document.addEventListener('click', function (ev) {
+    var btn = nextBtn();
+    if (!btn) return;
+    var t = ev.target;
+    if (t !== btn && !(btn.contains && btn.contains(t))) return;
+    if (!isComplete()) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      var m = msgEl();
+      if (m) m.style.display = 'block';
+    }
+  }, true);
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', paint);
+  else paint();
+  setInterval(paint, 1000);
+})();
+</script>
 </body>
 </html><script type="text/javascript">JotForm.isNewSACL=true;</script>
