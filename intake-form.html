@@ -129,7 +129,7 @@
     padding:
       calc(22px + env(safe-area-inset-top))
       max(var(--shell-pad), env(safe-area-inset-right))
-      calc(var(--shell-floor) + env(safe-area-inset-bottom))
+      0
       max(var(--shell-pad), env(safe-area-inset-left));
   }
   /* Making #card a flex column is what finally switches on the .spacer that
@@ -157,6 +157,56 @@
         actually sits in the flex column. */
   .privacy-line + .save-pill{margin-top:0;}
   #card > .section-label{margin-bottom:0;}
+
+  /* ---------------------------------------------------------------------------
+     The action dock — why the primary button is sticky (Josh, 2026-08-19, second
+     report on the live form).
+
+     Reserving space at the bottom (--shell-floor) is NOT enough on its own, and
+     the reason is worth writing down because it is easy to "fix" the same bug
+     twice. Padding can only decide where the button sits when there is SLACK.
+     On the tallest steps there is none: measured off the reported iPhone, the
+     option cards end 784px down an 877px frame, Safari's toolbar covers
+     everything past 821px, and the button needs 50px — so the content itself
+     has already run past the toolbar line before the button is even laid out.
+     Grow the floor and the document just gets taller; the button does not move
+     up a pixel, because its position is content-determined, not box-determined.
+
+     Sticky is what actually moves it. `bottom: --shell-floor` keeps the dock's
+     bottom edge that far above the viewport at all times: it rides at the end
+     of the flow when the step is short (the constraint is already met, so
+     nothing shifts and the layout is byte-identical to before), and lifts off
+     the content to sit above the toolbar when the step is tall. The button is
+     then reachable on arrival at every step, on any viewport, with no scroll —
+     which the floor alone could not promise.
+
+     The floor is still load-bearing: it is what the dock's `bottom` is measured
+     from. See the note on .frame for why nothing here can measure the toolbar
+     and why the real fix lives on the parent page.
+     --------------------------------------------------------------------------- */
+  .action-dock{
+    position:sticky;
+    bottom:0;
+    background:#fff;
+    z-index:2;   /* over the content it lifts off; under .ac-list, which is 10 */
+    /* ⚠️ The floor lives HERE, not on .frame, and `bottom` is 0 rather than the
+       floor — because the dock's background has to reach the bottom of the
+       WINDOW. Held the other way round (floor on .frame, bottom:96px) the white
+       stopped at the button and the content it had lifted off went on scrolling
+       through the 96px below it, framed by the dock above and the toolbar
+       below. Owning the floor as padding puts that strip inside the dock's own
+       box, so it is painted. */
+    padding-bottom:calc(var(--shell-floor) + env(safe-area-inset-bottom));
+  }
+  /* A step with no primary button (the completed screen) gets no dock, so it
+     has to carry the floor itself — an empty dock is not the answer, since
+     sticky would lift it over the last of that screen's tappable options. */
+  #card.no-dock{padding-bottom:calc(var(--shell-floor) + env(safe-area-inset-bottom));}
+  /* so tall content dissolves into the dock instead of being guillotined by it */
+  .action-dock::before{
+    content:''; position:absolute; left:0; right:0; bottom:100%; height:22px;
+    background:linear-gradient(rgba(255,255,255,0), #fff); pointer-events:none;
+  }
 
   .app-head{display:flex; align-items:center; margin-bottom:18px;}
   .app-logo-img{height:26px; width:auto; display:block;}
@@ -564,7 +614,33 @@ function go(n){
   saveProgress();
 }
 function card(html){
-  document.getElementById('card').innerHTML = html;
+  const el = document.getElementById('card');
+  el.innerHTML = html;
+  dockActions(el);
+}
+/* Wraps the trailing action area in .action-dock so it can be sticky (see the
+   CSS note). Done HERE, once, rather than in each step's template: there are a
+   dozen call sites and a step that forgot the wrapper would silently lose the
+   sticky behaviour — the button would just sit under the toolbar again, which
+   is precisely the bug this exists to stop.
+
+   Anchored on the LAST primary button rather than the first, so a mid-flow
+   button (the insurance photo screen has one) can never swallow the rest of
+   the step into the dock. Everything after it — the hint line, the privacy
+   line, "Save & finish later" — belongs to the action and rides along. Steps
+   with no primary button (the completed screen) simply aren't docked. */
+function dockActions(el){
+  const kids = [...el.children];
+  let i = -1;
+  for(let n = kids.length - 1; n >= 0; n--){
+    if(kids[n].classList.contains('cont-wrap') || kids[n].classList.contains('btn-primary')){ i = n; break; }
+  }
+  el.classList.toggle('no-dock', i < 0);
+  if(i < 0) return;
+  const dock = document.createElement('div');
+  dock.className = 'action-dock';
+  el.insertBefore(dock, kids[i]);
+  for(const n of kids.slice(i)) dock.appendChild(n);
 }
 /* Every step re-renders from state, so anything the patient typed goes back
    through innerHTML. Escape it or a stray quote breaks out of the attribute. */
