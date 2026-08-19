@@ -680,7 +680,7 @@ function triggerSaveFinish(){
      save pill sits after step 2, which requires a valid phone, so this is the
      unreachable-in-practice branch — but the whole feature is a text message,
      and failing silently because a field was empty is not an option. */
-  if(state.phone.replace(/\D/g,'').length !== 10){
+  if(!validPhone(state.phone)){
     renderSavePhonePrompt('');
     return;
   }
@@ -725,9 +725,8 @@ function renderSavingLink(){
 }
 
 function sendResumeLink(){
-  const digits = state.phone.replace(/\D/g,'');
-  if(digits.length !== 10){
-    renderSavePhonePrompt('That number doesn\'t look right — 10 digits, please.');
+  if(!validPhone(state.phone)){
+    renderSavePhonePrompt(phoneProblem(state.phone));
     return;
   }
   renderSavingLink();
@@ -904,7 +903,7 @@ function validDOB(v){
 function validStep2(){
   return state.firstName.trim() !== '' &&
          state.lastName.trim() !== '' &&
-         state.phone.replace(/\D/g,'').length === 10 &&
+         validPhone(state.phone) &&
          validDOB(state.dob) &&
          state.manualState.trim() !== '' &&
          validEmail(state.email);
@@ -933,10 +932,40 @@ function dobProblem(v){
   if(!/^\d{2}\/\d{2}\/\d{4}$/.test(s)) return 'Type it as MM/DD/YYYY — with all four digits of the year.';
   return validDOB(s) ? '' : 'That date doesn\'t look right — double-check the day, month and year.';
 }
+/* US phone numbers, validated rather than counted.
+   ⚠️ MIRRORS server/src/phone.js — the rule lives in both because the form
+   ships as one standalone file with no build step and cannot import it. That
+   file's header carries the reasoning; server/test-phone.mjs pins the two
+   together, so a change here that is not made there fails the suite.
+
+        NXX - NXX - XXXX     N = 2-9, X = 0-9
+
+   Both prefixes start 2-9 (no US number begins 0 or 1) and neither may be N11
+   — 911, 411, 611 are service codes. Counting digits alone is what let
+   "1347503714" through: our own number, typed with a leading 1 and the last
+   digit dropped. It reached RingCentral and was rejected there. */
+var NANP_10 = /^[2-9](?!11)\d{2}[2-9](?!11)\d{2}\d{4}$/;
+function tenDigits(v){
+  const d = String(v == null ? '' : v).replace(/\D/g,'');
+  if(d.length === 10) return d;
+  if(d.length === 11 && d[0] === '1') return d.slice(1);
+  return '';
+}
+function validPhone(v){ return NANP_10.test(tenDigits(v)); }
 function phoneProblem(v){
   const d = String(v == null ? '' : v).replace(/\D/g,'');
   if(!d) return 'Enter your phone number.';
-  return d.length === 10 ? '' : 'Phone numbers need 10 digits — this one has ' + d.length + '.';
+  const ten = tenDigits(v);
+  if(!ten){
+    return d.length < 10
+      ? 'Phone numbers need 10 digits — this one has ' + d.length + '.'
+      : 'That\'s ' + d.length + ' digits — a US number has 10.';
+  }
+  if(!/^[2-9]/.test(ten)) return 'US phone numbers don\'t start with a 0 or a 1 — check the first digit.';
+  if(/^[2-9]11/.test(ten)) return 'That area code isn\'t a real one — check the first three digits.';
+  if(!/^\d{3}[2-9]/.test(ten)) return 'The three digits after the area code can\'t start with a 0 or a 1.';
+  if(/^\d{3}[2-9]11/.test(ten)) return 'Those middle three digits aren\'t a real prefix — check them.';
+  return '';
 }
 function emailProblem(v){
   const s = String(v == null ? '' : v).trim();
