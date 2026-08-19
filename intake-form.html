@@ -708,12 +708,8 @@ function renderSavePhonePrompt(errorMsg){
    on this screen is "Text me my link", and refreshContinue() would judge it
    against whichever step the patient paused on and disable it. */
 function formatSavePhone(el){
-  let v = el.value.replace(/\D/g,'').slice(0,10);
-  if(v.length >= 7) v = '(' + v.slice(0,3) + ') ' + v.slice(3,6) + '-' + v.slice(6);
-  else if(v.length >= 4) v = '(' + v.slice(0,3) + ') ' + v.slice(3);
-  else if(v.length > 0) v = '(' + v;
-  el.value = v;
-  state.phone = v;
+  el.value = phoneMask(phoneDigits(el.value));
+  state.phone = el.value;
   saveProgress();
 }
 
@@ -872,12 +868,17 @@ function formatDOB(el){
   trackSoon();
 }
 function formatPhone(el){
-  let v = el.value.replace(/\D/g,'').slice(0,10);
-  if(v.length >= 7) v = '(' + v.slice(0,3) + ') ' + v.slice(3,6) + '-' + v.slice(6);
-  else if(v.length >= 4) v = '(' + v.slice(0,3) + ') ' + v.slice(3);
-  else if(v.length > 0) v = '(' + v;
-  el.value = v;
-  state.phone = v;
+  const before = String(el.value).replace(/\D/g,'');
+  const d = phoneDigits(el.value);
+  el.value = phoneMask(d);
+  state.phone = el.value;
+  /* A keystroke that silently vanishes reads as a broken field, so say why —
+     the one place we deliberately ADD a flag mid-typing (cf.
+     refreshVisibleErrors). Not shown for the 11-digit paste, where dropping
+     the country code is the correct and unsurprising thing to have done. */
+  if(/^[01]/.test(before) && !(before.length === 11 && before[0] === '1')){
+    setFieldErr('fPhone', 'US phone numbers don\'t start with a 0 or a 1.');
+  }
   refreshContinue();
   trackSoon();
 }
@@ -952,6 +953,32 @@ function tenDigits(v){
   return '';
 }
 function validPhone(v){ return NANP_10.test(tenDigits(v)); }
+
+/* The mask is a HARD BLOCKER, not a hint (Josh, 2026-08-19): a digit that
+   could not begin a US phone number never lands in the field at all.
+
+   ⚠️ THIS IS WHERE 1347503714 CAME FROM. The old mask stripped non-digits and
+   truncated to ten BEFORE looking at what it had, so pasting or typing the
+   eleven-digit +1 347 503 7148 kept the country code and threw away the last
+   digit. The result is exactly ten digits long, so every length check in the
+   pipeline waved it through, and it cannot be dialled. The country code is
+   now removed BEFORE anything is truncated — order is the whole fix. */
+function phoneDigits(raw){
+  let d = String(raw == null ? '' : raw).replace(/\D/g,'');
+  /* A leading 1 on an eleven-digit number is a country code, not an area
+     code. Dropped first, so the last digit survives. */
+  if(d.length === 11 && d[0] === '1') d = d.slice(1);
+  /* Anything still starting 0 or 1 cannot be a US number. Dropped as typed,
+     so the field can never hold one — this is the hard block. */
+  while(d.length && (d[0] === '0' || d[0] === '1')) d = d.slice(1);
+  return d.slice(0,10);
+}
+function phoneMask(d){
+  if(d.length >= 7) return '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6);
+  if(d.length >= 4) return '(' + d.slice(0,3) + ') ' + d.slice(3);
+  if(d.length > 0) return '(' + d;
+  return '';
+}
 function phoneProblem(v){
   const d = String(v == null ? '' : v).replace(/\D/g,'');
   if(!d) return 'Enter your phone number.';
