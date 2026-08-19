@@ -55,6 +55,9 @@
        the form is a one-line change here, not a hunt through the rules. */
     --shell-max: 560px;
     --shell-pad: 20px;
+    /* Clearance under the pinned action. This is NOT a decorative margin —
+       deleting it puts Continue back under iOS Safari's toolbar. See .frame. */
+    --shell-floor: 96px;
   }
   *{box-sizing:border-box;}
 
@@ -78,11 +81,11 @@
      --------------------------------------------------------------------------- */
   body{
     margin:0; padding:0;
-    /* dvh for the standalone URL — every texted resume link opens this file
-       directly, and on iOS `vh` counts the space behind the browser toolbar,
-       which would leave the pinned Continue below the fold. The vh line ahead
-       of it is the fallback for browsers without dvh. Inside the iframe both
-       resolve to the iframe box, i.e. the parent's 100vh. */
+    /* dvh helps ONLY on the standalone URL every texted resume link opens,
+       where this file is the top-level document and dvh really does exclude
+       the browser's toolbars; the vh line is the fallback for browsers
+       without it. Embedded, both resolve to the iframe box and neither can
+       see the toolbar — which is what --shell-floor on .frame is for. */
     min-height:100vh;
     min-height:100dvh;
     background:#fff;
@@ -99,11 +102,34 @@
     flex:1 0 auto; display:flex; flex-direction:column; width:100%; min-width:0;
     background:#fff;
     /* max() so a notched phone in landscape can't tuck the form under the
-       cutout now that it runs to the window edge. */
+       cutout now that it runs to the window edge.
+
+       ⚠️ --shell-floor is load-bearing (Josh, 2026-08-19, reported against the
+       live form). iOS Safari's floating toolbar OVERLAYS the bottom of the
+       page, and the parent sizes our iframe with `height:100vh` — which on iOS
+       is the LARGE viewport, i.e. the height with the toolbars retracted. So
+       the bottom ~55px of this frame sits in a strip that is never painted,
+       and Continue, pinned to the bottom, landed under the toolbar pill.
+
+       Nothing inside the iframe can measure that strip: an iframe's dynamic
+       viewport (dvh) is its own box, fixed at whatever the parent gave it, so
+       dvh reports the same number as vh here and cannot see browser chrome.
+       env(safe-area-inset-bottom) is 0 for the same reason. The only honest
+       fix from this file is to reserve the space.
+
+       The card layout this replaced had it by accident — body carried
+       `padding-bottom:80px`. The takeover cut that to 26px AND pushed the
+       button to the very bottom, which is what surfaced the overlap.
+
+       The real root fix is one word in the PARENT: the wrapper on
+       medicallymodern.com/intake-form/ should be `height:100dvh`, not 100vh —
+       then the iframe is sized to what is actually visible and this reserve
+       becomes ordinary breathing room. That page is WordPress/Elementor, not
+       this repo, so the reserve stays until someone changes it there. */
     padding:
       calc(22px + env(safe-area-inset-top))
       max(var(--shell-pad), env(safe-area-inset-right))
-      calc(26px + env(safe-area-inset-bottom))
+      calc(var(--shell-floor) + env(safe-area-inset-bottom))
       max(var(--shell-pad), env(safe-area-inset-left));
   }
   /* Making #card a flex column is what finally switches on the .spacer that
