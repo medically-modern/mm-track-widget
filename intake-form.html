@@ -1208,6 +1208,11 @@ function renderNeeds(){
   }
 }
 
+/* UNUSED since 2026-08-19 — the confirmation line that named the product
+   ("we'll reach out with an update on your Dexcom G7 CGM soon") was replaced
+   by Josh's care-coordinator copy, which is deliberately product-agnostic.
+   Kept rather than deleted because the pumpLabel rule below is a product
+   decision somebody made once and would otherwise have to rediscover. */
 function getProductLabel(){
   const hasCGM = state.needsCategories.includes('cgm');
   const hasPump = state.needsCategories.includes('pump');
@@ -1656,14 +1661,21 @@ function renderCompleted(){
     return;
   }
   document.getElementById('divider').classList.remove('show');
-  const productLabel = getProductLabel();
   const isCall = state.proceedChoice === 'call';
   const title = isCall ? "Woohoo — we'll be calling you soon!" : "Woohoo — we started the process!";
-  const sub = isCall ? "Look forward to meeting you." : `We'll reach out with an update on your ${productLabel} soon.`;
+  /* The request path's copy is Josh's, 2026-08-19, and it is a commitment with
+     a clock on it — 24 hours, a tracking link, and a prescription the patient
+     can hand their provider — so it is deliberately concrete where the line it
+     replaced ("we'll reach out with an update on your CGM soon") was not. Two
+     sentences, split so neither becomes a centred paragraph nobody reads. */
+  const sub = isCall ? "Look forward to meeting you." : null;
   card(`
     <div class="confirm-check">✓</div>
     <div class="confirm-title">${title}</div>
-    <div class="confirm-sub">${sub}</div>
+    ${sub
+      ? `<div class="confirm-sub">${sub}</div>`
+      : `<div class="confirm-sub" style="margin-bottom:8px;">A care coordinator will be reaching out in the next 24 hours with a link where you can track your order status.</div>
+         <div class="confirm-sub">We'll also attach a prescription that you can send your provider to help speed things along.</div>`}
     ${isCall && !state.callBooked ? slotPickerHtml() : ""}
     ${isCall && state.callBooked ? `
       <div style="text-align:center; margin-bottom:14px; padding:12px; background:var(--mint); border-radius:12px;">
