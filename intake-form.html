@@ -38,7 +38,7 @@
      scale it down — the whole form renders at half size. The marketing site's
      iframe masked it (the parent page's viewport governs there); anyone on the
      standalone URL, which is every resume link, got the tiny version. -->
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Medically Modern — Intake Redesign</title>
 <style>
   :root{
@@ -50,17 +50,87 @@
     --line:#dfe7e6;
     --gold:#c3901f;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* The whole shell in two numbers. --shell-max is the readable column the
+       flow lives in; --shell-pad is its inset from the window edge. Widening
+       the form is a one-line change here, not a hunt through the rules. */
+    --shell-max: 560px;
+    --shell-pad: 20px;
   }
   *{box-sizing:border-box;}
+
+  /* ---------------------------------------------------------------------------
+     The form IS the page — it does not sit on one (Josh, 2026-08-19; the Hims
+     intake as the reference).
+
+     What this replaced: a grey #f2f3f2 field with a 420px white card floating
+     in the middle of it, rounded and shadowed. On a laptop that read as a
+     phone mockup pasted onto a desktop page — a 420px sliver at x=510 of a
+     1440px window, with ~1000px of empty grey around it.
+
+     Nothing upstream was imposing that. medicallymodern.com/intake-form/ is an
+     Elementor *canvas* page (no site header, no footer) whose entire body is
+       <div style="width:100%;height:100vh;overflow:hidden">
+         <iframe src="…/intake-form.html" style="width:100%;height:100%">
+     so the iframe is already handed the whole window, and the parent cannot
+     scroll — anything taller than the view scrolls inside here. The card was
+     this file electing to use a fraction of a viewport it already owned, which
+     is why the takeover needs no change to the marketing site.
+     --------------------------------------------------------------------------- */
   body{
-    margin:0; padding:40px 20px 80px;
-    background:#f2f3f2;
+    margin:0; padding:0;
+    /* dvh for the standalone URL — every texted resume link opens this file
+       directly, and on iOS `vh` counts the space behind the browser toolbar,
+       which would leave the pinned Continue below the fold. The vh line ahead
+       of it is the fallback for browsers without dvh. Inside the iframe both
+       resolve to the iframe box, i.e. the parent's 100vh. */
+    min-height:100vh;
+    min-height:100dvh;
+    background:#fff;
     font-family:var(--sans);
     color:var(--ink);
     display:flex; flex-direction:column; align-items:center;
   }
-  .rig{width:100%; max-width:420px;}
-  .frame{background:#fff; border-radius:20px; padding:24px 22px 26px; box-shadow:0 2px 14px rgba(20,40,34,.09);}
+  /* One column that fills the window top to bottom: .rig fills body, .frame
+     fills .rig, #card fills .frame. Every one is `flex:1 0 auto` — grow into
+     the spare room, but never shrink below content, so a long step (insurance,
+     doctor) still lays out at its natural height and scrolls the document. */
+  .rig{width:100%; max-width:var(--shell-max); flex:1 0 auto; display:flex;}
+  .frame{
+    flex:1 0 auto; display:flex; flex-direction:column; width:100%; min-width:0;
+    background:#fff;
+    /* max() so a notched phone in landscape can't tuck the form under the
+       cutout now that it runs to the window edge. */
+    padding:
+      calc(22px + env(safe-area-inset-top))
+      max(var(--shell-pad), env(safe-area-inset-right))
+      calc(26px + env(safe-area-inset-bottom))
+      max(var(--shell-pad), env(safe-area-inset-left));
+  }
+  /* Making #card a flex column is what finally switches on the .spacer that
+     every step has always emitted just above its Continue button: with the
+     column filling the window, the spacer eats the slack and pins Continue to
+     the bottom of the view, which is the behaviour being copied. Until now
+     #card was a plain block, so .spacer{flex:1} matched nothing and the button
+     simply trailed the content. */
+  #card{flex:1 0 auto; display:flex; flex-direction:column;}
+  /* Two consequences of #card's children becoming flex items, both of which
+     silently ADD vertical space to a rhythm that was tuned under block layout.
+     Corrected here rather than absorbed, and these are the only two shapes in
+     the whole flow that hit them (checked by measuring every step's boxes
+     against the previous build, not by reading).
+
+     1. A flex item contains its descendants' margins instead of letting the
+        last one escape — so a .qblock ended 11px taller AND kept the gap below
+        it, i.e. paid for the same margin twice. */
+  #card > .qblock > :last-child{margin-bottom:0;}
+  /*  2. Adjacent margins no longer collapse to the larger of the two, they sum.
+        Two pairs in the flow carry a positive margin on both sides: one doubled
+        a deliberate 14px gap to 28px, the other pushed a section label 2px off
+        its group. Zeroing the smaller of each pair restores the collapsed
+        value, and both rules are scoped so they can only bite where the item
+        actually sits in the flex column. */
+  .privacy-line + .save-pill{margin-top:0;}
+  #card > .section-label{margin-bottom:0;}
 
   .app-head{display:flex; align-items:center; margin-bottom:18px;}
   .app-logo-img{height:26px; width:auto; display:block;}
@@ -237,6 +307,24 @@
   .next-steps .num{
     width:24px; height:24px; border-radius:50%; background:var(--mint); color:var(--petrol);
     display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex:none;
+  }
+
+  /* ---------------------------------------------------------------------------
+     Wider than a phone. The page still fills the window; the COLUMN just stops
+     growing with it at --shell-max, because a text input stretched across
+     1400px is unreadable and is not what the reference does either.
+
+     The spacer is deliberately NOT capped here, so Continue sits on the bottom
+     edge of a laptop window exactly as it does on a phone. Capping it was tried
+     first and is the worse of the two: it clusters the step at the top and
+     leaves the leftover white space UNDER the button, which reads as a page
+     that ran out. Pinned, the same space falls between the content and the
+     action, which is just a layout — and it keeps the button in one fixed place
+     the whole way through the flow.
+     --------------------------------------------------------------------------- */
+  @media (min-width:700px){
+    /* keeps the safe-area term — this query also matches a phone in landscape */
+    .frame{padding-top:calc(40px + env(safe-area-inset-top));}
   }
 </style>
 </head>
