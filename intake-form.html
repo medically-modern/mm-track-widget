@@ -425,8 +425,6 @@
 const API_BASE   = 'https://dtc-mm-form-api-production.up.railway.app';
 const TRACK_URL  = API_BASE + '/api/intake/track';
 const SUBMIT_URL = API_BASE + '/api/intake/submit';
-const SLOTS_URL  = API_BASE + '/api/intake/slots';
-const BOOK_URL   = API_BASE + '/api/intake/book';
 const SCHEDULING_URL = API_BASE + '/api/intake/scheduling';
 const RESUME_LINK_URL = API_BASE + '/api/intake/resume-link';
 const RESUME_URL      = API_BASE + '/api/intake/resume';
@@ -1585,7 +1583,7 @@ function renderGoodNews(){
 }
 
 /* ---------- Step 7: Completed ---------- */
-/* Call openings come from Calendly, through our backend.
+/* Call openings come from Calendly's own inline widget.
  *
  * They used to be invented here: four plausible times built from the visitor's
  * own clock and stored as the rendered STRING. Two things were wrong with that.
@@ -1594,40 +1592,53 @@ function renderGoodNews(){
  * "Today 2:00 PM" produced a row a New York rep read as 2:00 PM Eastern and
  * called three hours early. Neither failure surfaced an error.
  *
- * Now: the backend asks Calendly for real availability, the patient's pick is a
- * real booking, and what travels is the UTC instant. `label` is decoration and
- * is never what gets stored.
+ * The replacement was a hand-rolled picker over Calendly's availability, which
+ * meant WE had to render each opening in the patient's zone — so this file
+ * detected the browser timezone and carried it around, defaulting to Eastern
+ * when detection failed. That was still us doing Calendly's job, and the
+ * booking half of it never worked: the API refuses every request on this
+ * account.
  *
- * The token lives on the server — the browser must never see it. */
+ * Now the widget owns all of it — availability, timezone conversion, slot
+ * races, the confirmation email. It reads the visitor's zone itself, so there
+ * is no timezone for this file to detect, pass along, or default to, and no
+ * Eastern fallback that could mislabel an out-of-state patient's call.
+ *
+ * All we ask the backend is WHICH event type to mount. The Calendly token
+ * lives on the server — the browser must never see it. */
 function loadSlots(){
   if(state.slotsRequested) return;
   state.slotsRequested = true;
 
-  var tz = 'America/New_York';
-  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || tz; } catch(e){}
-  state.timezone = tz;
-
+  /* schedulingUrl carries all three states on its own, so there is no second
+     flag to keep in step with it: undefined = still asking, a URL = mount the
+     widget, '' = scheduling is off or unreachable, fall back to a human. */
   fetch(SCHEDULING_URL)
     .then(function(r){ return r.json(); })
     .then(function(d){
       state.schedulingUrl = d.enabled ? d.url : '';
-      state.slotsEnabled = d.enabled !== false;
-      state.slotError = !d.enabled;
       render();
     })
     .catch(function(){
       state.schedulingUrl = '';
-      state.slotsEnabled = true;
-      state.slotError = true;
       render();
     });
 }
 
 /* Mount Calendly's inline widget once the container is on the page.
-   Loaded lazily so a patient who never asks for a call never fetches it. */
+   Loaded lazily so a patient who never asks for a call never fetches it.
+
+   The guard is the HOST, not a "did we mount once" flag. render() replaces the
+   whole card, so every re-render hands us a brand-new empty #calendlyHost — and
+   a one-way flag made the second render permanent: it bailed out, leaving the
+   patient a blank 640px gap where the calendar had been. Whether an iframe is
+   sitting in the host is the only question worth asking. `calendlyLoading` is
+   separate and narrower: it keeps concurrent renders from appending the SDK
+   script twice while the first copy is still in flight. */
 function mountCalendly(){
-  if(state.calendlyMounted || !state.schedulingUrl) return;
-  state.calendlyMounted = true;
+  if(!state.schedulingUrl) return;
+  var host = document.getElementById('calendlyHost');
+  if(!host || host.querySelector('iframe')) return;
 
   var url = state.schedulingUrl
     + '?hide_gdpr_banner=1'
@@ -1635,17 +1646,29 @@ function mountCalendly(){
     + '&email=' + encodeURIComponent(state.email || '');
 
   function init(){
-    var host = document.getElementById('calendlyHost');
-    if(!host || !window.Calendly) return;
-    window.Calendly.initInlineWidget({ url: url, parentElement: host, prefill: {} });
+    var el = document.getElementById('calendlyHost');
+    if(!el || el.querySelector('iframe') || !window.Calendly) return;
+    window.Calendly.initInlineWidget({ url: url, parentElement: el, prefill: {} });
   }
 
   if(window.Calendly){ init(); return; }
+  if(state.calendlyLoading) return;
+  state.calendlyLoading = true;
+
   var s = document.createElement('script');
   s.src = 'https://assets.calendly.com/assets/external/widget.js';
   s.async = true;
   s.onload = init;
-  s.onerror = function(){ state.slotError = true; render(); };
+  /* Drop the scheduling URL, don't just flag the error. The widget branch of
+     slotPickerHtml() only tests schedulingUrl, so leaving it set kept us
+     rendering a host div for an SDK that will never arrive — a blank box
+     instead of the "a care navigator will call you" fallback that the patient
+     can actually act on. */
+  s.onerror = function(){
+    state.calendlyLoading = false;
+    state.schedulingUrl = '';
+    render();
+  };
   document.head.appendChild(s);
 }
 
@@ -1707,14 +1730,10 @@ function renderCompleted(){
     ${isCall && state.callBooked ? `
       <div style="text-align:center; margin-bottom:14px; padding:12px; background:var(--mint); border-radius:12px;">
         <div style="font-weight:700; color:var(--petrol);">✓ You're booked</div>
-        <div class="hint" style="margin:2px 0 0;">${
-          /* Calendly's postMessage carries URIs, not a time — and its own
+        <!-- Calendly's postMessage carries URIs, not a time — and its own
              confirmation already showed the patient the slot they picked, so
-             repeating it here from a guess would be worse than not saying it. */
-          state.callBooked === 'scheduled'
-            ? "Check your email for the confirmation."
-            : "We'll call you " + state.callBooked + "."
-        }</div>
+             repeating it here from a guess would be worse than not saying it. -->
+        <div class="hint" style="margin:2px 0 0;">Check your email for the confirmation.</div>
       </div>` : ""}
     ${state.insurance === 'none' ? `
       <div class="banner-note" style="background:var(--mint); border-radius:12px; padding:12px 14px; font-size:13px; color:var(--petrol); margin-bottom:14px; line-height:1.5;">
@@ -1742,21 +1761,19 @@ function setProceed(v){
 /* Every state of the picker has copy. A disabled or empty picker with no
    explanation is the thing patients phone in about. */
 function slotPickerHtml(){
-  if(state.booking){
-    return '<div style="margin-bottom:14px;"><label style="margin-bottom:8px;">Booking your call…</label>'
-      + '<div class="hint">One moment — holding your time.</div></div>';
-  }
-
   if(state.schedulingUrl === undefined){
     loadSlots();
     return '<div style="margin-bottom:14px;"><label style="margin-bottom:8px;">Pick a time that works</label>'
       + '<div class="hint">Loading the calendar…</div></div>';
   }
 
-  /* Calendly's own scheduling page, inline. It owns availability, timezones,
-     slot races and the confirmation email — all the things a hand-rolled
-     picker has to get right and this one could not, because the booking API
-     refuses every request on this account. */
+  /* Calendly's own scheduling page, inline. It owns availability, timezone
+     conversion, slot races and the confirmation email — all the things a
+     hand-rolled picker has to get right and this one could not, because the
+     booking API refuses every request on this account. Nothing here narrows
+     what it shows: no timezone, no date, no month. Whatever a patient does or
+     does not see is the event type's own availability, rendered in their own
+     local time by the widget. */
   if(state.schedulingUrl){
     setTimeout(mountCalendly, 0);
     return '<div style="margin-bottom:14px;">'
@@ -1766,128 +1783,13 @@ function slotPickerHtml(){
   }
 
   /* Scheduling switched off, or Calendly unreachable. The patient is already
-     recorded — say what happens next rather than showing a dead picker. */
-  if(!state.slotsEnabled || state.slotError){
-    /* If they got as far as choosing a time, confirm THAT time back to them.
-       The booking didn't complete, but their answer is on the record and a rep
-       will honour it — telling them we'll "find a time" would be asking again
-       for something they already gave us. */
-    var body = state.requestedLabel
-      ? "We've got your request — we'll call you <strong>" + state.requestedLabel + "</strong>."
-      : "We've got your request — a care navigator will call you shortly to find a time.";
-    return '<div class="banner-note" style="background:var(--mint); border-radius:12px; padding:12px 14px;'
-      + ' font-size:13px; color:var(--petrol); margin-bottom:14px; line-height:1.5;">'
-      + body + '</div>';
-  }
-
-  /* Genuinely no openings. Deliberately does NOT say "we're fully booked": an
-     empty result also means the event type has no availability configured, and
-     claiming to be swamped when the calendar is simply empty is a different
-     lie from the one above, told to the same patient. */
-  if(!state.slots.length){
-    return '<div class="banner-note" style="background:var(--mint); border-radius:12px; padding:12px 14px;'
-      + ' font-size:13px; color:var(--petrol); margin-bottom:14px; line-height:1.5;">'
-      + "No openings in the next few days — we'll call you to get you booked in."
-      + '</div>';
-  }
-
-  var taken = state.slotTaken
-    ? '<div class="hint" style="margin:-2px 0 8px;">That time was just taken — here are the next openings.</div>'
-    : '';
-
-  var buttons = state.slots.map(function(s){
-    /* The INSTANT is the value; the label is only what the patient reads. */
-    return '<button class="opt" onclick="bookCall(\'' + s.start + '\')">'
-      + '<span class="lbl">' + s.label + '</span><span class="mark-arrow"></span></button>';
-  }).join('');
-
-  /* These times are already in the PATIENT's own zone — the label is rendered
-     server-side against the timezone their browser reported, not ours. Saying
-     so removes the doubt an out-of-state patient would otherwise have, and the
-     doubt is the whole problem: a patient who assumes "2:00 PM" means Eastern
-     and mentally converts it has just booked the wrong hour in their head. */
-  var tzNote = state.timezone
-    ? '<div class="hint" style="margin:-2px 0 8px;">Times shown in your local time ('
-        + tzLabel(state.timezone) + ')</div>'
-    : '';
-
-  return '<div style="margin-bottom:14px;"><label style="margin-bottom:8px;">Pick a time that works</label>'
-    + tzNote + taken + '<div class="options">' + buttons + '</div></div>';
-}
-
-/* "America/Denver" → "MDT". Falls back to the raw zone name rather than
-   guessing an abbreviation we can't derive. */
-function tzLabel(zone){
-  try{
-    var parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'short' })
-      .formatToParts(new Date());
-    var found = parts.find(function(p){ return p.type === 'timeZoneName'; });
-    return found ? found.value : zone;
-  }catch(e){ return zone; }
-}
-
-/* Book a real Calendly appointment.
- *
- * The submission is ALREADY saved by this point (setProceed submits before this
- * screen renders), so every failure here costs the booking and never the lead —
- * which is why nothing below falls back to an error screen. */
-function bookCall(startIso){
-  if(state.booking) return;
-  state.booking = true;
-  state.slotTaken = false;
-  render();
-
-  fetch(BOOK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sid: state.sid,
-      startTime: startIso,
-      email: state.email,
-      /* Required when the event type's location is an outbound call — the
-         number we ring IS the meeting location, so Calendly rejects the
-         booking without it. */
-      phone: state.phone,
-      firstName: state.firstName,
-      lastName: state.lastName,
-      timezone: state.timezone || 'America/New_York',
-    }),
-  })
-  .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(d){ return { ok: r.ok, d: d }; }); })
-  .then(function(res){
-    state.booking = false;
-
-    if(res.ok && res.d.ok){
-      state.callBooked = res.d.label;
-      state.callBookedStart = res.d.startTime;
-      /* Calendly emails the confirmation with reschedule and cancel links, so
-         there is nothing further to send from here. */
-      render();
-      return;
-    }
-
-    /* Only claim the slot was taken when the backend says so. Treating every
-       failure as a race told patients "that time was just taken" while the
-       real fault sat in a log nobody was reading. */
-    if(res.d.reason === 'slot_taken' && Array.isArray(res.d.slots) && res.d.slots.length){
-      state.slots = res.d.slots;
-      state.slotTaken = true;
-      render();
-      return;
-    }
-
-    /* The booking failed, but the patient still TOLD us when they want to be
-       called and the backend has recorded it. Say that back to them — "we'll
-       call you to find a time" throws away an answer they already gave. */
-    state.slotError = true;
-    state.requestedLabel = res.d.requestedLabel || '';
-    render();
-  })
-  .catch(function(){
-    state.booking = false;
-    state.slotError = true;
-    render();
-  });
+     recorded — say what happens next rather than showing a dead picker. This
+     is the only other state there is: the widget either mounts and owns the
+     booking, or it doesn't and a human picks the call up. */
+  return '<div class="banner-note" style="background:var(--mint); border-radius:12px; padding:12px 14px;'
+    + ' font-size:13px; color:var(--petrol); margin-bottom:14px; line-height:1.5;">'
+    + "We've got your request — a care navigator will call you shortly to find a time."
+    + '</div>';
 }
 
 /* ---------------------------------------------------------------------------
