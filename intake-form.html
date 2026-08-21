@@ -478,7 +478,17 @@ const SAVE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 function saveProgress(){
   try {
     const keep = Object.assign({}, state);
-    delete keep.cardPhotos; delete keep.submitting; delete keep.submitted;
+    /* `submitted` IS kept — it is the durable fact that this form is filed, and
+       it is what stops a reload reopening a submitted record as an editable
+       form. `submitting` is the in-flight flag and must never survive a reload:
+       restoring it would render a form stuck mid-send.
+
+       `insuranceLink` never survives either, and for a third reason again: it
+       holds a live upload token for this patient's row. A saved copy would
+       outlive the screen that uses it, in a store the patient can edit. The
+       parked screen re-mints on arrival, which costs one request and is also
+       what re-reads whether their card has since arrived. */
+    delete keep.cardPhotos; delete keep.submitting;
     delete keep.cardUploadState; delete keep.insuranceLink;
     /* The resume token rides along so a reload on this device stays attached to
        the row the patient already has, rather than starting a second one once
@@ -500,7 +510,10 @@ function loadProgress(){
     Object.assign(state, d.state);
     state.cardPhotos = [];      /* never restored — see above */
     state.submitting = false;
-    state.submitted  = false;
+    /* Coerced rather than trusted: this comes back through JSON from a store the
+       patient can edit, and anything truthy-but-not-true here would strand them
+       on a confirmation for a form they never sent. */
+    state.submitted  = state.submitted === true;
     state.insuranceLink = null; /* credential, never persisted — see the field */
     if(d.resumeToken) RESUME_TOKEN = d.resumeToken;
     return true;
@@ -2169,8 +2182,28 @@ function submitForm(opts){
      3. A fresh start.
 --------------------------------------------------------------------------- */
 function startFromLocalOrScratch(){
-  if(loadProgress() && state.step > 1){ go(state.step); }
+  const restored = loadProgress();
+  /* A filed form must not reopen editable just because the page was reloaded —
+     the token is stripped from the address bar on arrival, so localStorage is
+     the only thing left saying what this visit was.
+
+     This lands on the plain "already submitted" screen rather than the full
+     confirmation: a reload days later is not the moment to replay "Woohoo — we
+     started the process!" and a booking picker, and unlike the confirmation
+     this screen offers a way to start a new request. The link itself still
+     opens the real confirmation. */
+  if(restored && state.submitted){ renderAlreadySubmitted(); return; }
+  if(restored && state.step > 1){ go(state.step); }
   else { go(1); }
+}
+
+/* The way out of a filed form. Wipes the saved copy and reloads rather than
+   resetting `state` by hand — the fragment is already stripped from the URL, so
+   a reload with nothing in storage is a guaranteed-clean first step, where a
+   hand-reset risks carrying one stale field into what should be a fresh form. */
+function startFresh(){
+  clearProgress();
+  location.reload();
 }
 
 /* A restored state is applied over the defaults rather than replacing them, so
@@ -2185,6 +2218,26 @@ function applyRestoredState(restored){
   if(!Array.isArray(state.needsCategories)) state.needsCategories = [];
   const n = Number(state.step);
   state.step = (n >= 1 && n <= 7) ? n : 1;
+}
+
+/* A form that is already filed, reopened from its own link. Nothing here is
+   editable and nothing beacons.
+
+   renderCompleted() is the real confirmation and is used whenever we know which
+   path the patient chose. This is the fallback for a row whose Proceed
+   Preference we could not read back, because that function falls through to the
+   step-7 QUESTION — with buttons — when it has none, and buttons are the one
+   thing this screen must never show. */
+function renderAlreadySubmitted(){
+  document.getElementById('divider').classList.remove('show');
+  card(`
+    <div class="confirm-check">✓</div>
+    <div class="confirm-title">You're all set — we've got this one</div>
+    <div class="confirm-sub">This form has already been submitted, so there's nothing left to fill in.</div>
+    <div class="confirm-sub">Need to change something? Text us at <a href="tel:+13475037148" style="color:var(--petrol); font-weight:600;">(347) 503-7148</a>.</div>
+    <div class="spacer"></div>
+    <button class="btn-primary btn-primary-full" onclick="startFresh()">Start a new request</button>
+  `);
 }
 
 /* `expired` here means the link no longer resolves to anything — almost always
@@ -2227,6 +2280,28 @@ function resumeFromToken(token){
     }
     applyRestoredState(res.d.state);
     RESUME_TOKEN = token;   /* keeps this visit attached to the row they started */
+
+    /* Already filed. The link outlives the form being finished — its lifetime is
+       the monday row, not a clock — so reopening an editable form here is how a
+       filed record gets rewritten by whoever holds the link: a forwarded text, a
+       rep checking what we sent. Land on the confirmation instead.
+
+       `submitted` is also what track() and trackOnUnload() bail on, so this view
+       is silent. That matters for more than tidiness: the beacon is what carries
+       the resume token back, and carrying it is what re-keys the row against the
+       browser that opened the link. No beacon, no re-key.
+
+       saveProgress() carries `submitted` now, so a reload lands on the filed
+       screen instead of a blank form — the token is stripped from the address
+       bar on arrival, so localStorage is the only thing that remembers. */
+    if(res.d.completed){
+      state.submitted = true;
+      saveProgress();
+      if(state.proceedChoice) renderCompleted();
+      else renderAlreadySubmitted();
+      return;
+    }
+
     saveProgress();         /* the link worked once; make this device remember too */
     go(state.step);
     /* go() only beacons on forward movement, and resuming isn't movement. Send
