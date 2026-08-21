@@ -430,6 +430,10 @@ const RESUME_LINK_URL = API_BASE + '/api/intake/resume-link';
 const RESUME_URL      = API_BASE + '/api/intake/resume';
 const CONTACT_CARD_URL = API_BASE + '/api/intake/contact.vcf';
 const CARD_PHOTO_URL  = API_BASE + '/api/intake/card-photo';
+/* The "I don't have it on me" park: mints + texts the upload link, and hands
+   back the token this tab polls with. */
+const INSURANCE_LINK_URL = API_BASE + '/api/intake/insurance-link';
+const CARD_STATUS_URL    = API_BASE + '/api/intake/card-on-file';
 
 const state = {
   step: 1,
@@ -451,6 +455,12 @@ const state = {
      per-slot progress lives in cardUploadState and is never saved. */
   cardFrontUploaded: false, cardSecondaryUploaded: false,
   cardUploadState: {},
+  /* The parked screen's own state — whether the upload link went out, and the
+     token this tab polls with. Transient and DELIBERATELY not persisted: the
+     token is a credential for the patient's row, and a saved copy would
+     outlive the screen that uses it. A resumed session re-parks and re-mints,
+     which also re-reads whether the card has since arrived. */
+  insuranceLink: null,
   callBooked: null,
   proceedChoice: null,
   submitting: false,
@@ -469,7 +479,7 @@ function saveProgress(){
   try {
     const keep = Object.assign({}, state);
     delete keep.cardPhotos; delete keep.submitting; delete keep.submitted;
-    delete keep.cardUploadState;
+    delete keep.cardUploadState; delete keep.insuranceLink;
     /* The resume token rides along so a reload on this device stays attached to
        the row the patient already has, rather than starting a second one once
        the server's short-lived session keys age out. */
@@ -491,6 +501,7 @@ function loadProgress(){
     state.cardPhotos = [];      /* never restored — see above */
     state.submitting = false;
     state.submitted  = false;
+    state.insuranceLink = null; /* credential, never persisted — see the field */
     if(d.resumeToken) RESUME_TOKEN = d.resumeToken;
     return true;
   } catch(e){ return false; }
@@ -521,7 +532,12 @@ function payload(extra){
     cgmType: state.cgmType, cgmReason: state.cgmReason,
     pumpStatus: state.pumpStatus, pumpType: state.pumpType,
     doctorName: state.doctorName, doctorContact: state.doctorContact,
-    insuranceMethod: state.insurance,
+    /* Once a parked patient's card lands, the row is told it arrived as a
+       PHOTO. "Not provided" beside an insurance card photo is a row that
+       contradicts itself, and a rep reads that column to decide whether there
+       is anything to work with. What they originally answered is not lost —
+       Insurance Link Sent and the Drop-off Step record the park. */
+    insuranceMethod: (state.insurance === 'none' && haveInsuranceCard()) ? 'photo' : state.insurance,
     insuranceProvider: state.manualProvider,
     insuranceOther: state.manualOtherProvider,
     memberId: state.manualMemberId,
@@ -768,17 +784,31 @@ function sendResumeLink(){
 
 function renderLinkSent(d){
   const last4 = d.phoneLast4 ? esc(d.phoneLast4) : '';
-  /* `sent:false` means the link is real but the text didn't go out. Showing it
-     on screen is the difference between a patient who can still get back in and
-     one whose only route just failed silently. */
-  const undelivered = d.sent === false;
+  /* THREE states, not two.
+     `alreadySent` — we deliberately sent nothing, because this patient already
+        has their link. One link, ever (Josh, 2026-08-21): tapping Save on
+        three different steps used to text three links carrying three
+        snapshots, which reads as spam and leaves them picking between links
+        with no way to tell which is current. The one they have is current —
+        it points at a snapshot this save just refreshed.
+     `sent:false` alone — the link is real but the text didn't go out. Showing
+        it on screen is the difference between a patient who can still get back
+        in and one whose only route just failed silently.
+     ⚠️ The two must not share a screen: apologising for a text we chose not to
+     send would teach them something false about a link that is working. */
+  const already = d.alreadySent === true;
+  const undelivered = !already && d.sent === false;
+  const showUrl = (already || undelivered) && d.url;
   card(`
     <div class="confirm-check">✓</div>
-    <div class="confirm-title">${undelivered ? 'Here\'s your link' : 'Sent — check your texts'}</div>
-    <div class="confirm-sub">${undelivered
+    <div class="confirm-title">${already ? 'You already have your link'
+      : undelivered ? 'Here\'s your link' : 'Sent — check your texts'}</div>
+    <div class="confirm-sub">${already
+      ? `We texted it${last4 ? ' to the number ending ' + last4 : ''} earlier, and it's still the right one — everything you've filled in since is on it. Here it is again in case the text is buried.`
+      : undelivered
       ? 'We couldn\'t get the text out just now, so here it is directly. Save it somewhere handy.'
       : `We texted a link${last4 ? ' to the number ending ' + last4 : ''}. It doesn't expire — tap it whenever you're ready and you'll land right back here, nothing to re-type.`}</div>
-    ${undelivered && d.url ? `
+    ${showUrl ? `
       <div class="link-copy">
         <input type="text" id="resumeUrl" readonly value="${esc(d.url)}">
         <button onclick="copyResumeLink()">Copy</button>
@@ -1296,7 +1326,51 @@ function pickInsurance(v){
   state.insurance = v;
   if(v === 'photo'){ state.insurancePhase = 'photoCapture'; renderInsurance(); return; }
   if(v === 'manual'){ state.insurancePhase = 'providerPick'; renderInsurance(); return; }
-  if(v === 'none'){ go(6); return; }
+  /* "I don't have it on me" used to walk straight on to the confirmation
+     screen — so a patient with no insurance information at all finished the
+     form and landed in Completed, with a thank-you line asking them to text a
+     photo to a care navigator that nobody tracked. It now PARKS them: we text
+     an upload link, they stay a partial, and the last question waits for their
+     card (Josh, 2026-08-21). */
+  if(v === 'none'){ state.insurancePhase = 'awaitingCard'; renderInsurance(); parkForInsuranceCard(); return; }
+}
+
+/* ---------------------------------------------------------------------------
+   Where the insurance step exits to.
+
+   ⚠️ A CARD ANSWER SKIPS STEP 6. The photo path used to hand the patient on to
+   "Who's your insurance with?", then "A couple more details", then "Good news —
+   we're in network with Anthem or Blue Cross Blue Shield" — three screens
+   asking for, or asserting, things we can read off the card they just sent
+   (Josh, 2026-08-21). The card IS the answer, so the next thing they see is
+   the question that actually needs them: are we clear to contact your doctor.
+
+   The manual path keeps step 6 — there we DO know the carrier, because they
+   typed it, and the in-network line is the reassurance that whole screen is
+   for.
+--------------------------------------------------------------------------- */
+/* Do we have this patient's card, by any route?
+   `cardFrontUploaded` is the instant upload landing on their monday row; a
+   photo sitting in `cardPhotos` with a FAILED instant upload still counts,
+   because it rides the final submit — which is exactly how the photo path
+   already treats one ("we'll send it along with your form"). Gating only on
+   the row would strand a patient whose upload blipped, with their card on
+   screen and no way forward. */
+function haveInsuranceCard(){
+  return !!state.cardFrontUploaded || !!state.cardPhotos[0];
+}
+function insuranceAnsweredByCard(){
+  return state.insurance === 'photo' || state.insurance === 'none';
+}
+function leaveInsuranceStep(){
+  go(insuranceAnsweredByCard() ? 7 : 6);
+}
+/* Back from the final screen, mirroring the above: returning a card patient to
+   step 6 would show them a screen they were never routed through, and its Back
+   would then bounce them to the insurance menu. Whichever way they came in,
+   Back retraces it. */
+function completedBack(){
+  go(insuranceAnsweredByCard() ? 5 : 6);
 }
 
 /* Card photos ride along with the submission for a human to read on our end.
@@ -1370,8 +1444,141 @@ function uploadCardPhoto(slot){
     /* Repaint ONLY the screen that is waiting on this: the primary card's
        confirmation. Slot 1 finishes under the fields screen, where a repaint
        would yank the focus out of the member-ID input mid-word. */
-    if(state.step === 5 && slot === 0 && state.insurancePhase === 'photoCapture') renderInsurance();
+    if(state.step === 5 && slot === 0
+       && (state.insurancePhase === 'photoCapture' || state.insurancePhase === 'awaitingCard')) {
+      renderInsurance();
+    }
   });
+}
+
+
+/* ---------------------------------------------------------------------------
+   "I don't have it on me" — park the patient and text them an upload link.
+
+   The old behaviour was a shrug: the form carried on to the confirmation
+   screen, and the thank-you page told the patient to text a photo to a care
+   navigator. Nobody chased it, nothing tracked it, and the row sat in Completed
+   looking finished while the one fact that decides their benefits was missing.
+
+   Now the row stays a PARTIAL and the last question waits for the card. The
+   link they get is the same family as the rep's CGM data link — a tiny upload
+   page, no login — and its success screen hands them back into this form.
+--------------------------------------------------------------------------- */
+function parkForInsuranceCard(){
+  state.insurance = 'none';
+  state.insurancePhase = 'awaitingCard';
+  state.insuranceLink = { sending: true };
+  renderInsurance();
+  saveProgress();
+
+  const snapshot = Object.assign({}, state);
+  delete snapshot.cardPhotos; delete snapshot.submitting; delete snapshot.submitted;
+  delete snapshot.cardUploadState; delete snapshot.insuranceLink;
+
+  fetch(INSURANCE_LINK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload({
+      formState: snapshot,
+      formUrl: location.origin + location.pathname,
+    })),
+  })
+  .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(d){ return { ok: r.ok, d: d }; }); })
+  .then(function(res){
+    if(!res.ok || !res.d.ok) throw new Error((res.d && res.d.error) || 'send failed');
+    const d = res.d;
+    /* The card can already be there — a rep attached it, or they came back to
+       a screen they had already satisfied. Then there is nothing to wait for
+       and nothing to text. */
+    if(d.hasCard) state.cardFrontUploaded = true;
+    state.insuranceLink = {
+      sending: false,
+      /* `alreadySent` is not a failure: they have this link, we simply did not
+         send a second copy of it. Only a genuine delivery failure gets the
+         apology screen — and only when we have nowhere else to put the link. */
+      failed: !d.sent && !d.emailed && !d.alreadySent && !d.hasCard,
+      url: d.url || '',
+      token: d.token || '',
+      phoneLast4: d.phoneLast4 || '',
+    };
+    renderInsurance();
+    saveProgress();
+    pollForCard();
+  })
+  .catch(function(){
+    state.insuranceLink = { sending: false, failed: true, url: '', token: '' };
+    renderInsurance();
+  });
+}
+
+/* ---------------------------------------------------------------------------
+   Watch for the card while the patient sits on the parked screen.
+
+   The normal shape of this is two devices: the form open on a laptop, the
+   texted link opened on a phone. Nothing about that upload reaches this tab,
+   so the gate would stay shut in front of somebody who had just satisfied it.
+
+   ⚠️ ONE loop, ever, and it stops itself. A poll started on every render — or
+   one with no stopping condition — is the shape that took RingCentral down for
+   the whole company on 2026-08-20 from a single browser. So: a generation
+   counter kills the previous loop, the phase is re-checked before every
+   request, and it gives up after POLL_MAX_MS rather than running for as long
+   as a tab is left open. A patient who waits longer than that still gets in
+   through their own link, which reopens the form from the board.
+--------------------------------------------------------------------------- */
+var cardPollGen = 0;
+const CARD_POLL_MS  = 6000;
+const CARD_POLL_MAX_MS = 15 * 60 * 1000;
+function pollForCard(){
+  const gen = ++cardPollGen;
+  const startedAt = Date.now();
+  const token = state.insuranceLink && state.insuranceLink.token;
+  if(!token) return;
+
+  (function tick(){
+    setTimeout(function(){
+      if(gen !== cardPollGen) return;                       /* superseded */
+      if(state.insurancePhase !== 'awaitingCard') return;   /* they moved on */
+      if(haveInsuranceCard()) return;                       /* already through */
+      if(Date.now() - startedAt > CARD_POLL_MAX_MS) return;
+
+      fetch(CARD_STATUS_URL + '/' + encodeURIComponent(token))
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(j){
+          if(gen !== cardPollGen) return;
+          if(j && j.ok && j.hasCard){
+            state.cardFrontUploaded = true;
+            saveProgress();
+            /* Tell the board straight away rather than at submit. A patient
+               who uploads and then wanders off has still answered the
+               insurance question, and the row should say so — Insurance
+               Provided Via flips to "Photo of card" (see payload) instead of
+               sitting on "Not provided" beside a card photo. It also restarts
+               the drop-off quiet clock from the moment they actually acted,
+               which is when the nudge should start counting. */
+            track();
+            if(state.step === 5 && state.insurancePhase === 'awaitingCard') renderInsurance();
+            return;
+          }
+          tick();
+        })
+        /* A failed poll is not an answer — keep waiting rather than deciding
+           the card isn't there. The loop's own cap is what ends this. */
+        .catch(function(){ tick(); });
+    }, CARD_POLL_MS);
+  })();
+}
+
+/* The parked screen's Continue, when it is still shut. Its own message rather
+   than blockedContinueTap's field-by-field walk: there is no field on this
+   screen to highlight, and "a few things need a fix" would be a lie. */
+function blockedInsuranceTap(e){
+  if(e && e.target && e.target.closest && e.target.closest('button')) return;
+  const hint = document.getElementById('contHint');
+  if(hint){
+    hint.textContent = "We'll open this up as soon as your insurance card comes through.";
+    hint.classList.add('show');
+  }
 }
 
 function pickProvider(v){
@@ -1381,14 +1588,18 @@ function pickProvider(v){
 }
 function insuranceBack(){
   if(state.insurancePhase === 'fields'){ state.insurancePhase = 'providerPick'; renderInsurance(); return; }
-  if(state.insurancePhase === 'providerPick'){
-    /* The photo path reaches provider-pick via the capture screen; the manual
-       path reaches it straight from the menu. Back should retrace whichever. */
-    if(state.insurance === 'photo'){ state.insurancePhase = 'photoCapture'; }
-    else { state.insurancePhase = 'choice'; state.insurance = null; }
-    renderInsurance(); return;
+  /* Only the manual path reaches provider-pick now — the photo path answers
+     the carrier question by being a photo — so this always retraces to the
+     menu. (It used to branch on `state.insurance === 'photo'` and send them
+     back to the capture screen; that branch became unreachable when the photo
+     path stopped asking.) */
+  if(state.insurancePhase === 'providerPick' || state.insurancePhase === 'photoCapture'
+     || state.insurancePhase === 'awaitingCard'){
+    state.insurancePhase = 'choice';
+    state.insurance = null;
+    renderInsurance();
+    return;
   }
-  if(state.insurancePhase === 'photoCapture'){ state.insurancePhase = 'choice'; state.insurance = null; renderInsurance(); return; }
   go(4);
 }
 function secondaryBlockHtml(){
@@ -1501,7 +1712,7 @@ function renderInsurance(){
           : got ? ''
                 : '<div class="confirm-sub">Your card is already on your file from earlier.</div>'}
         ${got ? `<img class="card-preview" src="${state.cardPhotos[0]}" alt="Your insurance card">` : ''}
-        <button class="btn-primary btn-primary-full" onclick="state.insurancePhase='providerPick'; renderInsurance();">Continue</button>
+        <button class="btn-primary btn-primary-full" onclick="leaveInsuranceStep()">Continue</button>
         <div style="text-align:center; margin:6px 0 8px;">
           <label class="btn-ghost" for="cardFront">Upload a different photo</label>
         </div>
@@ -1515,7 +1726,7 @@ function renderInsurance(){
     card(`
       ${backLine('insuranceBack()')}
       <h1 class="step-title">Upload a photo of your card</h1>
-      <p class="step-sub">A photo of the front is enough — pick one you've already taken. We'll read it on our end; you'll just confirm who you're insured with on the next screen.</p>
+      <p class="step-sub">A photo of the front is enough — pick one you've already taken. We'll read your carrier and member ID off it on our end, so there's nothing for you to type.</p>
       <label class="upload-zone" for="cardFront">
         <div class="u-title">Select a photo of your insurance card from your camera roll</div>
         <span class="choose-btn">Upload photo</span>
@@ -1524,6 +1735,107 @@ function renderInsurance(){
         style="display:none" onchange="readCardPhoto(this, 0)">
       <div class="privacy-line">🔒 Secure &amp; HIPAA-compliant</div>
       ${saveLinkHtml()}
+    `);
+    return;
+  }
+
+  /* ---- "I don't have it on me": parked, waiting on their card ----
+     Three states on one screen: sending the link, the link sent, and the card
+     landed. The Continue is the gate — it is the LAST question of the form
+     sitting behind their upload, which is the whole shape Josh asked for
+     (2026-08-21): "until then they are parked as a partial form fillout". */
+  if(state.insurancePhase === 'awaitingCard'){
+    if(state.cardUploadState[0] === 'uploading'){
+      card(`
+        <div class="confirm-title" style="margin-top:28px;">Uploading your card…</div>
+        <div class="confirm-sub">One second.</div>
+        <img class="card-preview" src="${state.cardPhotos[0]}" alt="Your insurance card">
+      `);
+      return;
+    }
+    if(haveInsuranceCard()){
+      card(`
+        ${backLine('insuranceBack()')}
+        <div class="confirm-check">✓</div>
+        <div class="confirm-title">Got your card — thank you!</div>
+        <div class="confirm-sub">That's everything we needed. One last question and you're done.</div>
+        <button class="btn-primary btn-primary-full" onclick="leaveInsuranceStep()">Continue</button>
+      `);
+      return;
+    }
+    /* A RESUMED session lands here with no link state — it is a credential and
+       is deliberately never persisted (see the state field). Re-park: the
+       server's once-guard means that re-mints the token this tab polls with
+       and re-reads whether the card has since arrived, WITHOUT texting them a
+       second copy of a link they already have.
+
+       ⚠️ The flag is set here, before the timeout, and that is what stops this
+       being a fetch on every render — `parkForInsuranceCard` renders, and a
+       render that re-entered this branch with the flag still null would kick
+       off another. Deferred rather than called directly for the same reason:
+       nothing re-enters render from inside a render. */
+    if(!state.insuranceLink){
+      state.insuranceLink = { sending: true };
+      setTimeout(parkForInsuranceCard, 0);
+    }
+    const s = state.insuranceLink || {};
+    /* `sending` is undefined on a fresh park (the fetch is in flight) and
+        false once it has answered either way, so the three states are the
+        three values rather than a second flag to keep in step. */
+    if(s.sending !== false){
+      card(`
+        <div class="confirm-title" style="margin-top:28px;">Texting you your link…</div>
+        <div class="confirm-sub">One second.</div>
+      `);
+      return;
+    }
+    if(s.failed){
+      /* Their answers are already on file — the row was written before the
+         text was attempted — so this is a delivery failure, not a lost form.
+         Say that, and give them the link on screen if we have one. */
+      card(`
+        ${backLine('insuranceBack()')}
+        <h1 class="step-title">We couldn't send that text</h1>
+        <p class="step-sub">Your answers are saved. ${s.url
+          ? "Here's your upload link directly — save it somewhere handy."
+          : 'Try again, or text us the photo whenever you have your card.'}</p>
+        ${s.url ? `
+          <div class="link-copy">
+            <input type="text" id="resumeUrl" readonly value="${esc(s.url)}">
+            <button onclick="copyResumeLink()">Copy</button>
+          </div>` : ''}
+        <div class="spacer"></div>
+        <button class="btn-primary btn-primary-full" onclick="parkForInsuranceCard()">Try again</button>
+        <div style="text-align:center; font-size:13px; color:var(--ink-2); margin-top:14px;">
+          Or text us at <a href="tel:+13475037148" style="color:var(--petrol); font-weight:600;">(347) 503-7148</a>
+        </div>
+      `);
+      return;
+    }
+    const last4 = s.phoneLast4 ? esc(s.phoneLast4) : '';
+    card(`
+      ${backLine('insuranceBack()')}
+      <div class="confirm-check">✓</div>
+      <div class="confirm-title">No problem!</div>
+      <div class="confirm-sub">We're sending you a link so you can upload your insurance
+        information whenever you have it${last4 ? ' — check the texts on the number ending ' + last4 : ''}.</div>
+      <div class="banner-note" style="background:var(--mint); border-radius:12px; padding:12px 14px; font-size:13px; color:var(--petrol); margin:0 0 16px; line-height:1.5;">
+        Once your card is in, we'll ask you one last question and you're all set.
+        We'll hold your answers until then.
+      </div>
+      <div class="cont-wrap" onclick="blockedInsuranceTap(event)">
+        <button class="btn-primary btn-primary-full" disabled>Continue</button>
+      </div>
+      <div class="cont-hint" id="contHint"></div>
+      <!-- Found it while reading this? Then there is no reason to make them go
+           and dig the text out — it is the same upload, to the same column, by
+           the same code the photo path uses. -->
+      <div style="text-align:center; margin:6px 0 8px;">
+        <label class="btn-ghost" for="cardFront">I've got it here — upload it now</label>
+      </div>
+      <input type="file" id="cardFront" accept="image/*"
+        style="display:none" onchange="readCardPhoto(this, 0)">
+      <div class="privacy-line">🔒 Secure &amp; HIPAA-compliant</div>
     `);
     return;
   }
@@ -1691,7 +2003,7 @@ function renderCompleted(){
        everyone else) keep both. */
     if(state.pumpStatus === 'Need a new insulin pump'){
       card(`
-        ${backLine('go(6)')}
+        ${backLine('completedBack()')}
         <h1 class="step-title">Last step — book a quick call</h1>
         <p class="step-sub">A new insulin pump starts with a 10-minute call: we'll help you land on the right pump, then get it moving with your doctor.</p>
         <div class="options">
@@ -1701,7 +2013,7 @@ function renderCompleted(){
       return;
     }
     card(`
-      ${backLine('go(6)')}
+      ${backLine('completedBack()')}
       <h1 class="step-title">Ready for us to contact your doctor?</h1>
       <div class="options">
         <button class="opt" onclick="setProceed('request')"><span class="lbl">Yes, send my request now</span><span class="mark-arrow"></span></button>
@@ -1735,10 +2047,13 @@ function renderCompleted(){
              repeating it here from a guess would be worse than not saying it. -->
         <div class="hint" style="margin:2px 0 0;">Check your email for the confirmation.</div>
       </div>` : ""}
-    ${state.insurance === 'none' ? `
-      <div class="banner-note" style="background:var(--mint); border-radius:12px; padding:12px 14px; font-size:13px; color:var(--petrol); margin-bottom:14px; line-height:1.5;">
-        We still need your insurance card — text a photo to your care navigator at (347) 503-7148. We'll follow up on that specifically.
-      </div>` : ""}
+    <!-- The "we still need your insurance card" banner is gone (2026-08-21).
+         It was the whole plan for a patient who answered "I don't have it on
+         me": finish the form, then read a line asking them to text a photo to
+         a number, which nobody tracked and nothing chased. Those patients no
+         longer reach this screen without a card — they are parked on step 5
+         until one lands, and this screen means the same thing for them as for
+         everybody else. -->
     <!-- A real .vcf served by the backend, not a data: URI — iOS ignores the
          download attribute on data: URIs entirely, so the old button did
          nothing on the phones patients actually finish on. The server picks
