@@ -521,6 +521,22 @@ function loadProgress(){
 }
 function clearProgress(){ try { localStorage.removeItem(SAVE_KEY); } catch(e){} }
 
+/* After a real submission, keep ONE fact and nothing else: this device filed a
+   form. No answers, no name, no token — the PHI reasoning that had this path
+   clear localStorage entirely holds unchanged, because a bare {submitted:true}
+   identifies nobody. What it buys (Josh, 2026-08-21, the Timmytest Two test):
+   a reload now lands on "You're all set" with an explicit "Start a new
+   request" door, instead of a blank form that quietly creates a second
+   partial row the moment somebody types. The takeover fix makes reusing the
+   filed row impossible BY DESIGN — that reuse is exactly how a real patient's
+   record got overwritten — so the stray row can only be prevented by making
+   "start over" a deliberate tap rather than the default. */
+function markSubmittedLocally(){
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ savedAt: Date.now(), state: { submitted: true } }));
+  } catch(e){}
+}
+
 /* Survives an IP change mid-session (phone dropping off wifi), so the server can
    keep updating one partial lead instead of creating a new row each beacon. */
 const SESSION_ID = 'sid_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -1345,7 +1361,13 @@ function pickInsurance(v){
      photo to a care navigator that nobody tracked. It now PARKS them: we text
      an upload link, they stay a partial, and the last question waits for their
      card (Josh, 2026-08-21). */
-  if(v === 'none'){ state.insurancePhase = 'awaitingCard'; renderInsurance(); parkForInsuranceCard(); return; }
+  /* ⚠️ parkForInsuranceCard ONLY — no renderInsurance() first. Rendering the
+     awaitingCard branch before the park has set its state trips that branch's
+     resumed-session re-park guard, which schedules a SECOND park: two POSTs in
+     flight together, and the server's once-guard reads the stamp before either
+     send has written it — so both pass, and the patient gets the link text
+     twice (Timmytest Two, 2026-08-21). The park renders on its own. */
+  if(v === 'none'){ parkForInsuranceCard(); return; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1477,7 +1499,16 @@ function uploadCardPhoto(slot){
    link they get is the same family as the rep's CGM data link — a tiny upload
    page, no login — and its success screen hands them back into this form.
 --------------------------------------------------------------------------- */
+/* True while a park POST is in flight. Module-level, not state: the whole
+   point is to survive re-renders, and `state.insuranceLink.sending` is set by
+   the render branch BEFORE any request exists, so it cannot tell "asked" from
+   "asking". One flag, cleared when the request settles either way, means the
+   menu tap, the resumed-session re-park and the Try again button can never
+   stack a second POST on top of a live one. */
+var insuranceParkInFlight = false;
 function parkForInsuranceCard(){
+  if(insuranceParkInFlight) return;
+  insuranceParkInFlight = true;
   state.insurance = 'none';
   state.insurancePhase = 'awaitingCard';
   state.insuranceLink = { sending: true };
@@ -1521,7 +1552,8 @@ function parkForInsuranceCard(){
   .catch(function(){
     state.insuranceLink = { sending: false, failed: true, url: '', token: '' };
     renderInsurance();
-  });
+  })
+  .then(function(){ insuranceParkInFlight = false; });
 }
 
 /* ---------------------------------------------------------------------------
@@ -2153,7 +2185,7 @@ function submitForm(opts){
     state.submitting = false;
     if(!res.ok || !res.d.ok) throw new Error(res.d.error || 'Submission failed');
     state.submitted = true;
-    clearProgress();   /* done — nothing left to resume */
+    markSubmittedLocally();   /* done — a reload lands on "You're all set" */
     if(!silent) renderCompleted();
   })
   .catch(function(err){
@@ -2273,8 +2305,14 @@ function resumeFromToken(token){
   .then(function(res){
     if(!res.ok || !res.d.ok){
       /* A dead link with usable local progress isn't a dead end — this may well
-         be the same phone they saved from. Take the local copy silently. */
-      if(loadProgress() && state.step > 1){ go(state.step); return; }
+         be the same phone they saved from. Take the local copy silently.
+         ⚠️ Unless that copy says the form was FILED: a server hiccup on this
+         open must not reopen a submitted record editable — the local marker is
+         the read-only gate's last line when the server can't answer. */
+      if(loadProgress()){
+        if(state.submitted){ renderAlreadySubmitted(); return; }
+        if(state.step > 1){ go(state.step); return; }
+      }
       renderResumeFailed(res.d && res.d.expired);
       return;
     }
