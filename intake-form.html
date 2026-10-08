@@ -435,7 +435,60 @@ const CARD_PHOTO_URL  = API_BASE + '/api/intake/card-photo';
 const INSURANCE_LINK_URL = API_BASE + '/api/intake/insurance-link';
 const CARD_STATUS_URL    = API_BASE + '/api/intake/card-on-file';
 
+/* ---------------------------------------------------------------------------
+   Layouts (2026-10-08). One file, several question orders, for ad landing
+   pages: `?v=<name>` on this page's URL picks one. No `v`, or one not listed
+   here, is the main form exactly as it was.
+
+   A layout changes the ORDER questions come in, never the questions — and
+   every screen still reports its main-form step number, because the backend
+   turns that number into a fixed "Step N - …" label on monday (server/src/
+   labelMap.js STEP_LABELS). Renumbering would mislabel every row. A screen
+   asked before step 1 is step 0, which has no label: no row exists that early.
+
+   A new layout goes here AND in the backend's FORM_LAYOUTS together — the
+   backend drops a name it doesn't know, from the board and from resume links.
+--------------------------------------------------------------------------- */
+const LAYOUTS = {
+  main:    { first: 1 },
+  /* Google Ads, insulin users: opens on the CGM qualifying question, then the
+     main form from step 1 — without that question in step 3. Nobody is turned
+     away on it: every answer continues, and the answer is recorded (CGM
+     Coverage Path) like it always was. */
+  insulin: { first: 0, cgmReasonFirst: true },
+};
+function layoutFromUrl(){
+  const m = /[?&]v=([A-Za-z0-9_-]+)/.exec(location.search || '');
+  const v = m ? m[1].toLowerCase() : '';
+  return LAYOUTS[v] ? v : 'main';
+}
+function layout(){ return LAYOUTS[state.layout] || LAYOUTS.main; }
+
+/* Ad tags. Read off this page's URL, or — when the form is embedded — off the
+   page around it (see "The page this form is embedded in" below). Kept in
+   `state` so saved progress carries them, and sent on every beacon; the
+   backend only ever writes a tag that is present, so a later visit without
+   them (a texted resume link has none) never blanks the ones on the row. */
+const AD_TAGS = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid'];
+function adTagsFrom(search){
+  const out = {};
+  let q;
+  try { q = new URLSearchParams(search || ''); } catch(e){ return out; }
+  AD_TAGS.forEach(function(k){
+    const v = String(q.get(k) || '').trim().slice(0, 200);
+    if(v) out[k] = v;
+  });
+  return out;
+}
+const URL_AD_TAGS = adTagsFrom(location.search);
+
 const state = {
+  layout: layoutFromUrl(),
+  attribution: URL_AD_TAGS,
+  /* Whether the page around the form has been told this patient gave their
+     contact details — once per form, so a Back-and-forward doesn't count a
+     second conversion. */
+  leadSignaled: false,
   step: 1,
   reason: null,
   firstName: '', lastName: '', phone: '', dob: '', email: '',
@@ -474,6 +527,14 @@ const state = {
    push the whole save over the limit, losing the text answers too. */
 const SAVE_KEY = 'mm_intake_progress_v1';
 const SAVE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/* One saved copy PER LAYOUT. Every page on medically-modern.github.io shares
+   one localStorage, so a single key would have the insulin ad's form restore
+   a half-finished main form (or the other way round) — a different question
+   order, and a step number that means a different screen. The main form keeps
+   the original key, so nobody's progress from before layouts existed is lost. */
+function saveKey(){
+  return state.layout === 'main' ? SAVE_KEY : SAVE_KEY + ':' + state.layout;
+}
 
 function saveProgress(){
   try {
@@ -493,21 +554,28 @@ function saveProgress(){
     /* The resume token rides along so a reload on this device stays attached to
        the row the patient already has, rather than starting a second one once
        the server's short-lived session keys age out. */
-    localStorage.setItem(SAVE_KEY, JSON.stringify({
+    localStorage.setItem(saveKey(), JSON.stringify({
       savedAt: Date.now(), state: keep, resumeToken: RESUME_TOKEN || '',
     }));
   } catch(e){ /* private mode or full — resuming is a bonus, never a blocker */ }
 }
 function loadProgress(){
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(saveKey());
     if(!raw) return false;
     const d = JSON.parse(raw);
     if(!d || !d.state || (Date.now() - (d.savedAt || 0)) > SAVE_TTL_MS){
-      localStorage.removeItem(SAVE_KEY);
+      localStorage.removeItem(saveKey());
       return false;
     }
+    const layoutName = state.layout;
     Object.assign(state, d.state);
+    /* The key already says which layout this copy belongs to. */
+    state.layout = layoutName;
+    /* Fresh ad tags on this visit's URL win over the saved ones: the newest
+       click is the one that brought them back. */
+    if(Object.keys(URL_AD_TAGS).length) state.attribution = URL_AD_TAGS;
+    if(!state.attribution || typeof state.attribution !== 'object') state.attribution = {};
     state.cardPhotos = [];      /* never restored — see above */
     state.submitting = false;
     /* Coerced rather than trusted: this comes back through JSON from a store the
@@ -519,7 +587,7 @@ function loadProgress(){
     return true;
   } catch(e){ return false; }
 }
-function clearProgress(){ try { localStorage.removeItem(SAVE_KEY); } catch(e){} }
+function clearProgress(){ try { localStorage.removeItem(saveKey()); } catch(e){} }
 
 /* After a real submission, keep ONE fact and nothing else: this device filed a
    form. No answers, no name, no token — the PHI reasoning that had this path
@@ -533,7 +601,7 @@ function clearProgress(){ try { localStorage.removeItem(SAVE_KEY); } catch(e){} 
    "start over" a deliberate tap rather than the default. */
 function markSubmittedLocally(){
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ savedAt: Date.now(), state: { submitted: true } }));
+    localStorage.setItem(saveKey(), JSON.stringify({ savedAt: Date.now(), state: { submitted: true } }));
   } catch(e){}
 }
 
@@ -577,6 +645,10 @@ function payload(extra){
     },
     proceedChoice: state.proceedChoice,
     callBooked: state.callBooked,
+    /* Which question order, and which ad — Form Layout and the UTM/GCLID
+       columns. Neither identifies the patient. */
+    layout: state.layout,
+    attribution: state.attribution || {},
   };
   if(RESUME_TOKEN) p.resumeToken = RESUME_TOKEN;
   return Object.assign(p, extra || {});
@@ -628,6 +700,57 @@ function trackOnUnload(){
 }
 window.addEventListener('pagehide', trackOnUnload);
 
+/* ---------------------------------------------------------------------------
+   The page this form is embedded in (medicallymodern.com, via an iframe).
+
+   Two things only that page can do:
+     • Know the ad. Google puts utm_* and gclid on THAT page's URL, not on this
+       iframe's. The form asks for them ('mm-intake:hello') and a listener on
+       the page answers with its query string ('mm-intake:page').
+     • Tell Google Ads. The Google tag runs on that page and can't see into
+       this iframe, so the form says when a patient first gives their contact
+       details ('mm-intake:lead') and when the form is filed
+       ('mm-intake:submit'); the listener turns those into dataLayer events.
+   The listener lives in Google Tag Manager on the marketing site — see the
+   README. Until it is installed, all of this is silently a no-op.
+
+   Messages carry the event and the layout name — never an answer, never
+   anything that identifies the patient — and go to, and are accepted from,
+   the marketing site's own origins only.
+--------------------------------------------------------------------------- */
+const PARENT_ORIGINS = ['https://medicallymodern.com', 'https://www.medicallymodern.com'];
+function parentOrigin(){
+  if(window.parent === window) return '';
+  let o = '';
+  try {
+    if(location.ancestorOrigins && location.ancestorOrigins.length) o = location.ancestorOrigins[0];
+    else if(document.referrer) o = new URL(document.referrer).origin;
+  } catch(e){}
+  return PARENT_ORIGINS.indexOf(o) > -1 ? o : '';
+}
+function tellParent(type){
+  const o = parentOrigin();
+  if(!o) return;
+  try { window.parent.postMessage({ type: type, layout: state.layout }, o); } catch(e){}
+}
+let parentAnswered = false;
+window.addEventListener('message', function(e){
+  if(e.source !== window.parent || PARENT_ORIGINS.indexOf(e.origin) === -1) return;
+  const d = e.data || {};
+  if(d.type !== 'mm-intake:page' || typeof d.search !== 'string') return;
+  parentAnswered = true;
+  /* Tags on this iframe's own URL are the more specific of the two — a
+     landing page that names its campaign in the iframe src means it. */
+  if(Object.keys(URL_AD_TAGS).length) return;
+  const tags = adTagsFrom(d.search);
+  if(Object.keys(tags).length) state.attribution = tags;
+});
+/* Asked more than once: Tag Manager loads asynchronously, and its listener
+   may not be up yet when this iframe boots. */
+[0, 1000, 3000].forEach(function(ms){
+  setTimeout(function(){ if(!parentAnswered) tellParent('mm-intake:hello'); }, ms);
+});
+
 const dividers = {
   4: "Almost there — let's find your care team.",
   7: "Last step before we get this moving.",
@@ -644,16 +767,27 @@ function setDivider(n){
   if(dividers[n]){ d.textContent = dividers[n]; d.classList.add('show'); }
   else { d.classList.remove('show'); d.textContent=""; }
 }
+/* Share of the bar filled on step n. The main form is n/7; a layout with a
+   step 0 has eight screens, so the bar counts from its own first one. */
+function progressPct(n){
+  const first = layout().first;
+  return (n - first + 1) / (7 - first + 1) * 100;
+}
 function go(n){
   const advancing = n > state.step;
   state.step = n;
-  document.getElementById('fill').style.width = (n/7*100)+"%";
+  document.getElementById('fill').style.width = progressPct(n)+"%";
   setDivider(n);
   render();
   window.scrollTo(0, 0);
   /* Only beacon on forward progress — going Back shouldn't rewrite the
      drop-off step to an earlier one than the patient actually reached. */
   if(advancing) track();
+  /* Past the contact step for the first time: a lead, for Google Ads. */
+  if(advancing && n === 3 && !state.leadSignaled){
+    state.leadSignaled = true;
+    tellParent('mm-intake:lead');
+  }
   saveProgress();
 }
 function card(html){
@@ -877,6 +1011,7 @@ function markOptHtml(options, setter, current){
 }
 function render(){
   const s = state.step;
+  if(s===0) renderCgmReasonFirst();
   if(s===1) renderCover();
   if(s===2) renderInfo();
   if(s===3) renderNeeds();
@@ -884,6 +1019,19 @@ function render(){
   if(s===5) renderInsurance();
   if(s===6) renderGoodNews();
   if(s===7) renderCompleted();
+}
+
+/* ---------- Step 0 (a cgmReasonFirst layout only): the CGM qualifying question ----------
+   The same question, answers and monday column (CGM Coverage Path) as step
+   3's — just asked first, and then not asked again. Every answer continues:
+   "Neither applies" is recorded, not refused. */
+function renderCgmReasonFirst(){
+  card(`
+    <h1 class="step-title">Which of the following applies to you?</h1>
+    ${markOptHtml(CGM_REASON_OPTS, 'setCgmReason', state.cgmReason)}
+    <div class="spacer"></div>
+    ${continueBtn('go(1)', !state.cgmReason)}
+  `);
 }
 
 /* ---------- Step 1: Cover Sheet ---------- */
@@ -895,6 +1043,7 @@ function renderCover(){
     {k:"fingerprick", t:"I want off the finger prick / try a pump", q:"\"I hadn't pricked a finger in months by the time we spoke.\"", attr:"Ron S. · Google review"},
   ];
   card(`
+    ${backLine(layout().first < 1 ? 'go(0)' : null)}
     <h1 class="step-title">What brings you to Medically&nbsp;Modern?</h1>
     <div class="options">
       ${reasons.map(r=>`
@@ -1121,7 +1270,9 @@ function blockedContinueTap(e){
   if(!btn || !btn.disabled) return;
 
   let msg = '';
-  if(state.step === 3){
+  if(state.step === 0){
+    msg = 'Pick an option to continue.';
+  } else if(state.step === 3){
     const phases = step3Phases();
     msg = phases[Math.min(state.step3PhaseIdx, phases.length - 1)] === 'categories'
       ? 'Pick at least one to continue.' : 'Pick an option to continue.';
@@ -1210,7 +1361,12 @@ const PUMP_STATUS_OPTS = ['Only need insulin pump supplies','Need a new insulin 
 
 function step3Phases(){
   const phases = ['categories'];
-  if(state.needsCategories.includes('cgm')){ phases.push('cgmType'); phases.push('cgmReason'); }
+  if(state.needsCategories.includes('cgm')){
+    phases.push('cgmType');
+    /* Asked up front in a cgmReasonFirst layout. Mirrored in the backend's
+       step3PhaseFromState, which a resume rebuilt from the board relies on. */
+    if(!layout().cgmReasonFirst) phases.push('cgmReason');
+  }
   if(state.needsCategories.includes('pump')){
     phases.push('pumpStatus');
     if(state.pumpStatus === 'Need a new insulin pump' || state.pumpStatus === 'Only need insulin pump supplies'){
@@ -1234,7 +1390,7 @@ function step3Back(){
   else { go(2); }
 }
 function setCgmType(v){ state.cgmType=v; renderNeeds(); }
-function setCgmReason(v){ state.cgmReason=v; renderNeeds(); }
+function setCgmReason(v){ state.cgmReason=v; render(); }   /* step 3, or step 0 in a cgmReasonFirst layout */
 function setPumpStatus(v){ state.pumpStatus=v; renderNeeds(); }
 function setPumpType(v){ state.pumpType=v; renderNeeds(); }
 
@@ -2198,8 +2354,12 @@ function submitForm(opts){
   .then(function(res){
     state.submitting = false;
     if(!res.ok || !res.d.ok) throw new Error(res.d.error || 'Submission failed');
+    /* The first time only: a booking picked after the confirmation re-submits
+       silently, and that is the same filed form, not a second conversion. */
+    const firstFiling = !state.submitted;
     state.submitted = true;
     markSubmittedLocally();   /* done — a reload lands on "You're all set" */
+    if(firstFiling) tellParent('mm-intake:submit');
     if(!silent) renderCompleted();
   })
   .catch(function(err){
@@ -2239,8 +2399,22 @@ function startFromLocalOrScratch(){
      this screen offers a way to start a new request. The link itself still
      opens the real confirmation. */
   if(restored && state.submitted){ renderAlreadySubmitted(); return; }
-  if(restored && state.step > 1){ go(state.step); }
-  else { go(1); }
+  if(restored && state.step > layout().first){ go(state.step); }
+  else { go(layout().first); }
+}
+
+/* Puts a restored layout back on the address bar. A resume link opens this
+   file with no `?v=`, so without this a reload would open the main form and
+   look in the main form's saved copy. Also tags the Clarity session, so
+   recordings can be filtered by layout. */
+function settleLayout(){
+  try { if(window.clarity) window.clarity('set', 'form_layout', state.layout); } catch(e){}
+  if(layoutFromUrl() === state.layout) return;
+  try {
+    if(history && history.replaceState){
+      history.replaceState(null, '', location.pathname + (state.layout === 'main' ? '' : '?v=' + state.layout));
+    }
+  } catch(e){ /* the reload case is a nicety; the resumed form works either way */ }
 }
 
 /* The way out of a filed form. Wipes the saved copy and reloads rather than
@@ -2256,14 +2430,22 @@ function startFresh(){
    a field the server didn't return keeps its initial value instead of becoming
    undefined and rendering as "undefined" in an input. */
 function applyRestoredState(restored){
-  Object.assign(state, restored || {});
+  const r = restored || {};
+  Object.assign(state, r);
+  /* The layout they were filling comes back with their answers — the link
+     itself carries none. One this file doesn't know is the main form. */
+  if(!LAYOUTS[state.layout]) state.layout = 'main';
   state.cardPhotos = [];      /* never travel with the link — see saveProgress */
   state.cardUploadState = {}; /* transient per-slot progress, never restored */
   state.submitting = false;
   state.submitted  = false;
   if(!Array.isArray(state.needsCategories)) state.needsCategories = [];
-  const n = Number(state.step);
-  state.step = (n >= 1 && n <= 7) ? n : 1;
+  /* No step (or one out of range) opens the layout's first screen. The server
+     never sends a 0 — its filter floors at 1 — which is exactly how a layout
+     whose step-0 answer is missing gets sent back to it. */
+  const n = Number(r.step);
+  const first = layout().first;
+  state.step = (Number.isInteger(n) && n >= first && n <= 7) ? n : first;
 }
 
 /* A form that is already filed, reopened from its own link. Nothing here is
@@ -2325,12 +2507,13 @@ function resumeFromToken(token){
          the read-only gate's last line when the server can't answer. */
       if(loadProgress()){
         if(state.submitted){ renderAlreadySubmitted(); return; }
-        if(state.step > 1){ go(state.step); return; }
+        if(state.step > layout().first){ go(state.step); return; }
       }
       renderResumeFailed(res.d && res.d.expired);
       return;
     }
     applyRestoredState(res.d.state);
+    settleLayout();         /* before anything saves: the save key is per layout */
     RESUME_TOKEN = token;   /* keeps this visit attached to the row they started */
 
     /* Already filed. The link outlives the form being finished — its lifetime is
@@ -2369,6 +2552,7 @@ function resumeFromToken(token){
   });
 }
 
+settleLayout();
 if(window.__mmResumeToken){
   resumeFromToken(window.__mmResumeToken);
   window.__mmResumeToken = '';   /* one use — a re-render must not re-fetch */
