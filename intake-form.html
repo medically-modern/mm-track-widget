@@ -1974,6 +1974,10 @@ function loadSlots(){
     .then(function(r){ return r.json(); })
     .then(function(d){
       state.schedulingUrl = d.enabled ? d.url : '';
+      /* 'location' when the event type's only location is "Phone call", so the
+         patient's number can be prefilled; '' otherwise (server calendly.js
+         phoneCaptureOf). */
+      state.phonePrefill = d.phone_prefill || '';
       render();
     })
     .catch(function(){
@@ -2001,6 +2005,16 @@ function mountCalendly(){
     + '?hide_gdpr_banner=1'
     + '&name=' + encodeURIComponent([state.firstName, state.lastName].filter(Boolean).join(' '))
     + '&email=' + encodeURIComponent(state.email || '');
+
+  /* The phone too, when the booking page asks for one as its "Phone call"
+     location. It is the second key the Command Center links a booking to a
+     chart by (after email), so prefilling the number already on the row is
+     what makes the booking come back to this patient. Ten digits, the form
+     Calendly's own docs show for location=. */
+  var ten = phoneDigits(state.phone);
+  if(state.phonePrefill === 'location' && ten.length === 10){
+    url += '&location=' + encodeURIComponent(ten);
+  }
 
   function init(){
     var el = document.getElementById('calendlyHost');
